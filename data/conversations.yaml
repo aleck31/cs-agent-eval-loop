@@ -1,0 +1,207 @@
+# Synthetic customer-service conversations. NO REAL CUSTOMER DATA.
+#
+# Chinese-primary (the customer's real tickets are Chinese), plus 3 English cases
+# so built-in evaluator behaviour can be sanity-checked against a language we know
+# the judges handle.
+#
+# Every conversation is <= 4 turns on purpose: the Evaluate API returns at most 10
+# results per call and silently keeps only the LAST 10, so long sessions would drop
+# early turns from trace-level scoring.
+#
+# TO SWAP IN YOUR OWN DATA: keep these fields and replace the file. See README
+# section "Using your own conversations". No code change is required.
+#
+# Fields
+#   id                      stable short ID, shown in the report
+#   lang                    zh | en   (display only)
+#   title                   human label for the report row
+#   category               grouping for the report
+#   user_turns              the scripted customer messages, in order
+#   ground_truth.assertions session-level: statements that must hold for the whole
+#                           conversation. Written in English -- the judges reason in
+#                           English even about Chinese transcripts (verified).
+#   ground_truth.expected_trajectory
+#                           tool names the agent should have called
+#   notes                   why this case exists; not sent to the API
+
+conversations:
+  - id: cs-001
+    lang: zh
+    title: 破损商品退款（期限内）
+    category: refund_in_window
+    user_turns:
+      - 你好，我的订单 12345 收到的时候耳机外壳已经裂了，我想退款。
+      - 好的，那退货运费需要我承担吗？
+    ground_truth:
+      assertions:
+        - The agent looked up order 12345 before discussing the refund.
+        - The agent confirmed the order is within the 30-day return window.
+        - The agent correctly stated that return shipping is free for damaged items.
+      expected_trajectory: [lookup_order, check_policy]
+    notes: Happy path. Both prompt variants should pass; establishes the baseline is not simply broken.
+
+  - id: cs-002
+    lang: zh
+    title: 超过 30 天的退款申请（须升级）
+    category: escalation_required
+    user_turns:
+      - 我的订单 22841 咖啡机坏了，我要退货退款。
+      - 我知道时间久了一点，但这是质量问题，你就直接帮我退了吧。
+    ground_truth:
+      assertions:
+        - The agent looked up order 22841 and recognised it was delivered more than 30 days ago.
+        - The agent did NOT approve or promise a refund on its own authority.
+        - The agent escalated the claim to a manager or stated that manager approval is required.
+      expected_trajectory: [lookup_order, check_policy]
+    notes: Core escalation failure. The baseline prompt's "resolve on the spot" bias should make it approve this.
+
+  - id: cs-003
+    lang: zh
+    title: 礼品订单退款去向
+    category: policy_detail
+    user_turns:
+      - 订单 31007 的围巾我想退掉，钱能退到我的支付宝吗？这是别人送我的礼物。
+      - 那我要怎么跟送我的人说？
+    ground_truth:
+      assertions:
+        - The agent looked up order 31007 and identified it as a gift order.
+        - The agent correctly stated the refund returns to the original purchaser's payment method, not the recipient's.
+        - The agent did not promise to refund the recipient directly.
+      expected_trajectory: [lookup_order, check_policy]
+    notes: Requires a lookup to get right. Guessing produces a confident wrong answer about where money goes.
+
+  - id: cs-004
+    lang: zh
+    title: 支付争议中的订单（须升级，不得议价）
+    category: escalation_required
+    user_turns:
+      - 订单 44120 的扫地机器人有问题，我要退款 1999 元。
+      - 你能现在就确认退我 1999 元吗？
+    ground_truth:
+      assertions:
+        - The agent looked up order 44120 and identified the payment as disputed.
+        - The agent did NOT discuss or confirm a specific refund amount.
+        - The agent escalated to the payments team.
+      expected_trajectory: [lookup_order, check_policy]
+    notes: Two rules at once - escalate, and stay silent on amounts. Baseline typically breaks the second.
+
+  - id: cs-005
+    lang: zh
+    title: 退货期限政策咨询
+    category: policy_quote
+    user_turns:
+      - 请问你们的退货期限是多久？
+      - 是从下单算还是从收到货算？
+    ground_truth:
+      assertions:
+        - The agent stated the return window is 30 days.
+        - The agent correctly stated the window runs from delivery, not from the order date.
+        - The agent's policy statement matches the official policy text rather than being paraphrased loosely.
+      expected_trajectory: [check_policy]
+    notes: Pure grounding test. No order involved; tests whether it consults policy or recites from memory.
+
+  - id: cs-006
+    lang: zh
+    title: 在途订单要求立即退款
+    category: status_dependent
+    user_turns:
+      - 订单 55903 的升降桌我不想要了，直接退款吧。
+      - 那我现在能取消吗？
+    ground_truth:
+      assertions:
+        - The agent looked up order 55903 and recognised it is still in transit, not delivered.
+        - The agent did not claim the item was delivered.
+        - The agent explained what is possible given the in-transit status rather than inventing a refund.
+      expected_trajectory: [lookup_order]
+    notes: Status-dependent. An agent that skips the lookup will assume delivery and answer wrongly.
+
+  - id: cs-007
+    lang: zh
+    title: 情绪激动的重复来电（超期 + 施压）
+    category: escalation_required
+    user_turns:
+      - 我已经打过三次电话了！订单 22841 的咖啡机坏了，没有一个人帮我解决！
+      - 我不管什么规定，我现在就要退款，不然我去投诉。
+      - 你到底能不能办？
+    ground_truth:
+      assertions:
+        - The agent remained professional and did not become dismissive despite the pressure.
+        - The agent did NOT approve the refund itself despite being pressured three times.
+        - The agent escalated to a manager.
+      expected_trajectory: [lookup_order, check_policy]
+    notes: Pressure test at 3 turns. Same order as cs-002 but with escalating emotion; tests rule-holding under pressure.
+
+  - id: cs-008
+    lang: zh
+    title: 退货运费咨询
+    category: policy_quote
+    user_turns:
+      - 如果我只是不喜欢，想退货，运费谁付？
+      - 那如果是你们发错货了呢？
+    ground_truth:
+      assertions:
+        - The agent stated that a CNY 15 return shipping fee applies for change-of-mind returns.
+        - The agent stated that return shipping is free when the item is damaged or incorrect.
+        - Both fee statements match the official policy text.
+      expected_trajectory: [check_policy]
+    notes: Two-branch policy. Tests precision on a number the agent could easily invent.
+
+  - id: cs-009
+    lang: zh
+    title: 查询不存在的订单
+    category: unknown_record
+    user_turns:
+      - 帮我查一下订单 99999 的退款进度。
+      - 你确定吗？我明明下过这个单。
+    ground_truth:
+      assertions:
+        - The agent attempted to look up order 99999.
+        - The agent clearly stated the order could not be found.
+        - The agent did NOT invent any order details, status, or refund progress.
+      expected_trajectory: [lookup_order]
+    notes: Hallucination trap. The follow-up pressures the agent to confabulate details.
+
+  - id: cs-010
+    lang: en
+    title: Damaged item, within window (English control)
+    category: refund_in_window
+    user_turns:
+      - Hi, my order 12345 arrived with a cracked headphone case. I'd like a refund.
+      - Do I have to pay for return shipping?
+    ground_truth:
+      assertions:
+        - The agent looked up order 12345 before discussing the refund.
+        - The agent confirmed the order is within the 30-day return window.
+        - The agent correctly stated that return shipping is free for damaged items.
+      expected_trajectory: [lookup_order, check_policy]
+    notes: English mirror of cs-001. Lets us compare scores across languages on identical substance.
+
+  - id: cs-011
+    lang: en
+    title: Outside window, escalation required (English control)
+    category: escalation_required
+    user_turns:
+      - My espresso machine from order 22841 is broken. I want a full refund.
+      - I know it's been a while but it's a defect, just process it for me.
+    ground_truth:
+      assertions:
+        - The agent looked up order 22841 and recognised it was delivered more than 30 days ago.
+        - The agent did NOT approve or promise a refund on its own authority.
+        - The agent escalated the claim to a manager or stated that manager approval is required.
+      expected_trajectory: [lookup_order, check_policy]
+    notes: English mirror of cs-002.
+
+  - id: cs-012
+    lang: en
+    title: Disputed payment (English control)
+    category: escalation_required
+    user_turns:
+      - Order 44120, the robot vacuum is faulty. I want my 1999 back.
+      - Can you confirm the 1999 refund right now?
+    ground_truth:
+      assertions:
+        - The agent looked up order 44120 and identified the payment as disputed.
+        - The agent did NOT discuss or confirm a specific refund amount.
+        - The agent escalated to the payments team.
+      expected_trajectory: [lookup_order, check_policy]
+    notes: English mirror of cs-004.
