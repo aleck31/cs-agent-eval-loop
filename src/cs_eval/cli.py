@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from cs_eval import config as cfg
+from cs_eval import settings
 from cs_eval.agent import build_agent, run_conversation
 from cs_eval.dataset import Conversation, dataset_warnings, load_dataset, summarise
 from cs_eval.evaluate import (
@@ -261,7 +262,7 @@ def emit_report(
 
 # --- commands ---------------------------------------------------------------
 def cmd_demo(args: argparse.Namespace) -> int:
-    conversations = load_dataset(args.data)
+    conversations = load_dataset(settings.resolve_path(args.data))
     if args.limit:
         conversations = conversations[: args.limit]
     evaluators = cfg.select(args.evaluators)
@@ -339,7 +340,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     """Run and score ONE variant, saving a fixture. Lets you stage the loop."""
-    conversations = load_dataset(args.data)
+    conversations = load_dataset(settings.resolve_path(args.data))
     if args.limit:
         conversations = conversations[: args.limit]
     evaluators = cfg.select(args.evaluators)
@@ -405,8 +406,21 @@ def cmd_propose(args: argparse.Namespace) -> int:
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
-    """Check dataset + evaluator availability without spending on judges."""
-    conversations = load_dataset(args.data)
+    """Check config, dataset and evaluator availability without spending on judges."""
+    env_file = settings.ENV_FILE
+    if env_file.exists():
+        print(f"Config:     loaded {env_file.name}")
+    else:
+        print(f"Config:     no .env found (using built-in defaults). "
+              f"Try: cp .env.example .env")
+    for name in ("AWS_PROFILE", "AWS_REGION", "CS_EVAL_MODEL_ID",
+                 "CS_EVAL_EVALUATORS", "CS_EVAL_MAX_USD", "CS_EVAL_DATA"):
+        print(f"  {name:<20} {settings.get(name):<48} [{settings.describe_source(name)}]")
+
+    identity = _whoami(args.region)
+    print(f"\nIdentity:   {identity}")
+
+    conversations = load_dataset(settings.resolve_path(args.data))
     print(f"Dataset OK: {summarise(conversations)}")
     for warning in dataset_warnings(conversations):
         print(f"  ! {warning}")
@@ -426,28 +440,45 @@ def cmd_validate(args: argparse.Namespace) -> int:
         print(f"  all {len(evaluators)} configured evaluators are available")
 
     calls, projected = project_cost(conversations, evaluators, sides=2)
-    print(f"\nA full before/after run would be ~{calls} judge calls, ~${projected:.2f}.")
+    print(f"\nA full before/after run would be ~{calls} judge calls, ~${projected:.2f} "
+          f"(ceiling ${settings.get_float('CS_EVAL_MAX_USD'):.2f}).")
     return 0
 
 
+def _whoami(region: str) -> str:
+    """Report the resolved caller, so a wrong profile is obvious before spending."""
+    try:
+        import boto3
+
+        identity = boto3.client("sts", region_name=region).get_caller_identity()
+        return f"account {identity['Account']} as {identity['Arn'].split('/')[-1]}"
+    except Exception as exc:  # noqa: BLE001 - diagnostics only
+        return f"could not resolve credentials ({type(exc).__name__})"
+
+
 def build_parser() -> argparse.ArgumentParser:
+    """Flags default to the resolved setting, so an explicit flag always wins."""
     parser = argparse.ArgumentParser(
         prog="cs_eval",
         description="Measure whether a customer-service agent got better or worse.",
     )
-    parser.add_argument("--region", default=cfg.REGION)
-    parser.add_argument("--data", default=str(DATA))
-    parser.add_argument("--evaluators", default="core",
+    parser.add_argument("--region", default=settings.get("AWS_REGION"))
+    parser.add_argument("--data", default=settings.get("CS_EVAL_DATA"))
+    parser.add_argument("--evaluators", default=settings.get("CS_EVAL_EVALUATORS"),
                         choices=["core", "full", "minimal"])
-    parser.add_argument("--baseline", default="baseline")
-    parser.add_argument("--improved", default="improved")
+    parser.add_argument("--baseline", default=settings.get("CS_EVAL_BASELINE"))
+    parser.add_argument("--improved", default=settings.get("CS_EVAL_IMPROVED"))
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     demo = subparsers.add_parser("demo", help="run the whole loop and print the report")
-    demo.add_argument("--mode", default="live", choices=["live", "replay", "deployed"])
-    demo.add_argument("--limit", type=int, default=0, help="use only the first N cases")
-    demo.add_argument("--max-usd", type=float, default=5.0, help="hard spend ceiling")
+    demo.add_argument("--mode", default=settings.get("CS_EVAL_MODE"),
+                      choices=["live", "replay", "deployed"])
+    demo.add_argument("--limit", type=int, default=settings.get_int("CS_EVAL_LIMIT"),
+                      help="use only the first N cases (0 = all)")
+    demo.add_argument("--max-usd", type=float,
+                      default=settings.get_float("CS_EVAL_MAX_USD"),
+                      help="hard spend ceiling")
     demo.add_argument("-y", "--yes", action="store_true", help="skip the spend prompt")
     demo.set_defaults(func=cmd_demo)
 
@@ -455,8 +486,9 @@ def build_parser() -> argparse.ArgumentParser:
         "run", help="run and score ONE variant, saving a fixture"
     )
     run.add_argument("--variant", required=True, help="prompt name, e.g. baseline")
-    run.add_argument("--limit", type=int, default=0)
-    run.add_argument("--max-usd", type=float, default=5.0)
+    run.add_argument("--limit", type=int, default=settings.get_int("CS_EVAL_LIMIT"))
+    run.add_argument("--max-usd", type=float,
+                     default=settings.get_float("CS_EVAL_MAX_USD"))
     run.add_argument("-y", "--yes", action="store_true")
     run.set_defaults(func=cmd_run)
 
@@ -474,6 +506,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # MUST come before argparse (which reads resolved settings for its defaults)
+    # and before any boto3 client is built (which reads AWS_* from os.environ).
+    settings.load_env()
     args = build_parser().parse_args(argv)
     return args.func(args)
 

@@ -22,11 +22,10 @@ from datetime import datetime, timezone
 import boto3
 from botocore.config import Config
 
+from cs_eval import settings
 from cs_eval.config import Evaluator
 from cs_eval.evaluate import Score
 from cs_eval.report import WEAK_THRESHOLD, _normalise
-
-MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 INSTRUCTION = """\
 You are improving the system prompt of a customer-service AI agent.
@@ -99,7 +98,7 @@ def propose_prompt(
     )
 
     response = client.converse(
-        modelId=MODEL_ID,
+        modelId=settings.get("CS_EVAL_MODEL_ID"),
         messages=[{"role": "user", "content": [{"text": payload}]}],
         inferenceConfig={"maxTokens": max_tokens, "temperature": 0.2},
     )

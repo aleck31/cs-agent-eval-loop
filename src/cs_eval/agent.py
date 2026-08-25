@@ -18,9 +18,13 @@ from typing import Any
 from langchain_aws import ChatBedrock
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from cs_eval import settings
 from cs_eval.tools import TOOLS
 
-MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+def model_id() -> str:
+    """Resolved lazily: a module constant would freeze before `.env` is loaded."""
+    return settings.get("CS_EVAL_MODEL_ID")
 
 
 @dataclass
@@ -30,7 +34,7 @@ class Turn:
     user: str
     assistant: str
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
-    model: str = MODEL_ID
+    model: str = field(default_factory=model_id)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -61,17 +65,26 @@ class Transcript:
         }
 
 
-def build_agent(system_prompt: str, region: str, temperature: float = 0.0):
-    """Compile the LangGraph agent. Same construction as the FAST pattern."""
+def build_agent(
+    system_prompt: str,
+    region: str,
+    temperature: float | None = None,
+    model: str | None = None,
+):
+    """Compile the LangGraph agent. Same construction as the reference pattern."""
     from langchain.agents import create_agent
 
-    model = ChatBedrock(
-        model_id=MODEL_ID,
+    bedrock = ChatBedrock(
+        model_id=model or model_id(),
         region_name=region,
-        temperature=temperature,
+        temperature=(
+            temperature
+            if temperature is not None
+            else settings.get_float("CS_EVAL_TEMPERATURE")
+        ),
         beta_use_converse_api=True,
     )
-    return create_agent(model=model, tools=TOOLS, system_prompt=system_prompt)
+    return create_agent(model=bedrock, tools=TOOLS, system_prompt=system_prompt)
 
 
 def _extract_turn(user_text: str, messages: list[Any]) -> Turn:

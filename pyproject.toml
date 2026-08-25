@@ -1,0 +1,38 @@
+[project]
+name = "cs-eval"
+version = "0.2.0"
+description = "Before/after quality evaluation loop for a LangGraph customer-service agent on Bedrock AgentCore Evaluations"
+readme = "README.md"
+requires-python = ">=3.12"
+
+dependencies = [
+    "boto3>=1.42.89",
+    # langchain 1.2.10 declares langgraph<1.1.0 but imports
+    # langgraph.runtime.ExecutionInfo, which only exists in >=1.1 -- an upstream
+    # constraint bug. 1.3.x fixed the declaration.
+    "langchain>=1.3.15",
+    "langchain-aws>=1.7.2",
+    "langchain-core>=1.6.0",
+    "langgraph>=1.2.11",
+    "PyYAML>=6.0.3",
+    "python-dotenv>=1.0.1",
+]
+
+[project.scripts]
+cs-eval = "cs_eval.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cs_eval"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

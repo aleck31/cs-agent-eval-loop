@@ -1,7 +1,7 @@
 """Dataset loading and validation.
 
-The schema is intentionally small so the customer can swap this file for an export
-of their own tickets without touching code. Validation is strict and fails loudly:
+The schema is intentionally small so you can swap this file for an export of your
+own tickets without touching code. Validation is strict and fails loudly:
 a malformed dataset should not become a mysterious evaluation result.
 """
 

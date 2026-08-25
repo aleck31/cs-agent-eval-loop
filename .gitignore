@@ -1,6 +1,9 @@
 .venv/
+.env
+.dev/
 __pycache__/
 *.pyc
+.pytest_cache/
 reports/*.md
 !reports/.gitkeep
 .DS_Store

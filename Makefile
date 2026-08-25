@@ -1,37 +1,40 @@
 # One documented command per thing you might want to do.
-PY := ./.venv/bin/python
-export PYTHONPATH := src
+# Dependency management is uv; `uv run` resolves the environment itself, so there
+# is nothing to activate and no PYTHONPATH to export.
 
-.PHONY: help setup validate demo replay propose test clean
+.PHONY: help setup validate demo replay propose test lock clean
 
 help:
-	@echo "make setup     - create .venv and install pinned deps"
-	@echo "make validate  - check dataset + evaluators, no judge spend"
+	@echo "cp .env.example .env  - configure first (no exports needed)"
+	@echo "make setup     - create the environment from uv.lock"
+	@echo "make validate  - check config, creds, dataset, evaluators; free"
 	@echo "make demo      - THE DEMO: run the full before/after loop (costs money)"
 	@echo "make replay    - render the committed run, no AWS calls, \$$0"
 	@echo "make propose   - regenerate prompts/improved.md from baseline findings"
 	@echo "make test      - unit tests (no AWS calls)"
+	@echo "make lock      - re-resolve dependencies and update uv.lock"
 
 setup:
-	python3 -m venv .venv
-	./.venv/bin/pip install -q --upgrade pip
-	./.venv/bin/pip install -q -r requirements.txt
-	@echo "ready. now: make validate"
+	uv sync
+	@echo "ready. now: cp .env.example .env && make validate"
 
 validate:
-	$(PY) -m cs_eval.cli validate
+	uv run cs-eval validate
 
 demo:
-	$(PY) -m cs_eval.cli demo --mode live
+	uv run cs-eval demo --mode live
 
 replay:
-	$(PY) -m cs_eval.cli demo --mode replay
+	uv run cs-eval demo --mode replay
 
 propose:
-	$(PY) -m cs_eval.cli propose
+	uv run cs-eval propose
 
 test:
-	$(PY) -m pytest tests -q
+	uv run pytest -q
+
+lock:
+	uv lock --upgrade
 
 clean:
-	rm -rf __pycache__ src/cs_eval/__pycache__ .pytest_cache
+	rm -rf .pytest_cache **/__pycache__

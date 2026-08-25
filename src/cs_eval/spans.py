@@ -4,7 +4,7 @@ This is the load-bearing module of the offline path. AgentCore Evaluations reads
 telemetry through OpenTelemetry or OpenInference semantic conventions ("generic
 framework support"). We emit OpenInference, because that is the convention the
 OpenInference LangChain/LangGraph instrumentation emits in production -- so the
-spans built here have the same shape the customer's real agent will produce.
+spans built here have the same shape your real agent will produce.
 
 Span layout, per conversation turn:
 
