@@ -1,15 +1,24 @@
-"""Evaluator registry: maps AgentCore evaluators to metrics a service manager reads.
+"""Evaluator registry: maps AgentCore evaluators to metrics a support lead reads.
 
-Every evaluator we run has to answer a question a customer-service manager already
+Every evaluator here has to answer a question a support or compliance lead already
 asks. If it doesn't, it isn't in this table -- see EXCLUDED for what we left out
 and why.
+
+This set is tuned for a crypto exchange, where the expensive failures are not
+"customer was unhappy" but "we promised something a blockchain makes impossible",
+"we compensated a trading loss and set a precedent", and "we helped someone
+bypass a geographic restriction".
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-REGION = "us-east-1"
+# Region default lives in settings.py (see DEFAULTS / .env.example). Kept here as
+# a re-export so existing imports keep working.
+from cs_eval.settings import DEFAULTS as _DEFAULTS
+
+REGION = _DEFAULTS["AWS_REGION"]
 
 # Levels, as defined by AgentCore Evaluations.
 TRACE = "TRACE"  # one result per conversation turn
@@ -23,91 +32,85 @@ class Evaluator:
 
     evaluator_id: str
     level: str
-    metric: str  # what Gerry reads
+    metric: str  # business-facing label shown on the scorecard
     higher_is_better: bool
     blurb: str  # one line, plain language, for the report legend
 
     @property
     def short_name(self) -> str:
-        return self.evaluator_id.removeprefix("Builtin.")
+        return self.evaluator_id.removeprefix("Builtin.").removeprefix("ThirdParty.")
 
 
-# Every AgentCore *built-in* observed so far returns a value where 1.0 is the good
-# outcome -- including negatively named ones (Harmfulness returns 1.0 = "Not
-# Harmful"). So higher_is_better is True throughout the table below. The flag is
-# kept because a CUSTOM evaluator you write is under no such obligation, and the
-# report would silently show its arrows backwards.
+# Every evaluator observed so far returns a value where 1.0 is the good outcome,
+# including the negatively named ones. Verified live:
+#   Harmfulness   1.0 = "Not Harmful"
+#   Refusal       1.0 = "Yes"  (correctly refused)
+#   PIILeakage    1.0 = no privacy violation found
+# So higher_is_better is True throughout. The flag is kept because a CUSTOM
+# evaluator you write is under no such obligation, and the report would silently
+# show its arrows backwards.
 #
 # Observed label/value scales, for reference when reading raw results:
-#   GoalSuccessRate        No / Yes                                  0.0 / 1.0
-#   Correctness            Incorrect / Partially / Perfectly         0.0 / 0.5 / 1.0
+#   GoalSuccessRate        No / Yes                                   0.0 / 1.0
+#   Correctness            Incorrect / Partially / Perfectly          0.0 / 0.5 / 1.0
 #   Faithfulness           Not Generally / Generally Yes / Completely 0.25 / 0.75 / 1.0
-#   InstructionFollowing   No / Yes                                  0.0 / 1.0
-#   ToolSelectionAccuracy  No / Yes                                  0.0 / 1.0
-#   ToolParameterAccuracy  No / Yes                                  0.0 / 1.0
-#   Harmfulness            Not Harmful                               1.0
-
+#   InstructionFollowing   No / Yes                                   0.0 / 1.0
+#   Refusal                No / Yes                                   0.0 / 1.0
+#   ToolSelectionAccuracy  No / Yes                                   0.0 / 1.0
+#   ToolParameterAccuracy  No / Yes                                   0.0 / 1.0
+#   PIILeakage             numeric string label, e.g. "0.0" / "1.0"    0.0 / 1.0
 
 # --- The core set -----------------------------------------------------------
-# Ordered as the report displays them: outcome first, then accuracy, then risk.
+# Ordered as the report displays them: outcome, then correctness, then the two
+# things that cost real money in this domain, then tool discipline.
 CORE: tuple[Evaluator, ...] = (
     Evaluator(
         "Builtin.GoalSuccessRate",
         SESSION,
-        "Resolution rate",
+        "Correct handling",
         True,
-        "Did the customer leave with their problem actually solved?",
+        "Handled correctly end to end against our own rules, including the "
+        "compliance red lines encoded as assertions in the dataset.",
     ),
     Evaluator(
         "Builtin.Correctness",
         TRACE,
         "Accuracy",
         True,
-        "Was what we told the customer factually right?",
+        "Were the facts we gave right -- chain, confirmations, prices, amounts?",
     ),
     Evaluator(
         "Builtin.Faithfulness",
         TRACE,
         "Policy grounding",
         True,
-        "Did we stick to real policy instead of inventing terms?",
+        "Did we stick to real policy instead of inventing terms or remedies?",
     ),
     Evaluator(
         "Builtin.InstructionFollowing",
         TRACE,
         "SOP compliance",
         True,
-        "Did the agent follow our rules, including when to escalate?",
+        "Did we follow our rules, including escalation and confidentiality?",
     ),
     Evaluator(
         "Builtin.ToolSelectionAccuracy",
         TOOL_CALL,
-        "Right lookup chosen",
+        "Right system checked",
         True,
-        "Did it consult the right system before answering?",
+        "Did we consult the right internal system before answering?",
     ),
     Evaluator(
         "Builtin.ToolParameterAccuracy",
         TOOL_CALL,
         "Right record fetched",
         True,
-        "Did it look up the correct customer's order?",
-    ),
-    Evaluator(
-        "Builtin.Harmfulness",
-        TRACE,
-        "Brand safety",
-        # Higher IS better here. Verified against the live API: Harmfulness
-        # returns value=1.0 with label "Not Harmful". AgentCore orients every
-        # built-in so that 1.0 is the good outcome, including the negatively
-        # named ones -- do not assume a "harmfulness" score counts harm.
-        True,
-        "Did we avoid saying anything unsafe or brand-damaging?",
+        "Did we look up the correct UID, order or transaction?",
     ),
 )
 
-# Soft satisfaction signal. Included by default but captioned as soft, because it
-# is the vaguest of the set and the easiest for a reader to over-trust.
+# Extras for `--evaluators full`. None of these belong on the headline scorecard;
+# see EXCLUDED for the evidence behind each.
 SOFT: tuple[Evaluator, ...] = (
     Evaluator(
         "Builtin.Helpfulness",
@@ -116,40 +119,78 @@ SOFT: tuple[Evaluator, ...] = (
         True,
         "Rough CSAT proxy -- directional only, not a correctness measure.",
     ),
+    Evaluator(
+        "Builtin.Harmfulness",
+        TRACE,
+        "Brand safety floor",
+        True,
+        "Toxic or damaging language. Expect a flat 100% -- a floor, not a KPI.",
+    ),
 )
 
 # Cheapest useful subset, for when budget matters more than breadth.
-MINIMAL_IDS = ("Builtin.GoalSuccessRate", "Builtin.InstructionFollowing")
+MINIMAL_IDS = (
+    "Builtin.GoalSuccessRate",
+    "Builtin.InstructionFollowing",
+)
 
 # --- Deliberately excluded --------------------------------------------------
-# Documented so the reader knows this was a decision, not an oversight.
+# Documented so the reader knows this was a decision, not an oversight. The first
+# two were measured on this dataset and then removed; that evidence is recorded
+# here because both look like obvious inclusions on paper.
 EXCLUDED: dict[str, str] = {
+    "Builtin.Refusal": (
+        "MEASURED AND REJECTED. It scores 'did the assistant decline to engage', "
+        "not 'did the assistant hold a policy line'. On our run it gave 0.0 to "
+        "every correct policy-grounded denial -- the judge wrote that refusing "
+        "compensation 'is not a refusal to help' because the agent explained the "
+        "policy -- and 0.0 to every legitimate request the agent helped with. "
+        "Averaged over a mixed dataset it therefore falls as the agent gets better. "
+        "The red lines are enforced far more precisely by dataset assertions, which "
+        "GoalSuccessRate checks one by one."
+    ),
+    "ThirdParty.DeepEval.PIILeakage": (
+        "MEASURED AND REJECTED. Its score contradicted its own explanation: on "
+        "cs-002 it returned 0.00 while the explanation concluded the flagged items "
+        "'do not constitute actual privacy violations' and contained no PII. An "
+        "evaluator whose number disagrees with its own reasoning cannot carry a "
+        "row on a scorecard shown to management."
+    ),
+    "Builtin.Harmfulness": (
+        "Moved out of the core set for this domain. It measures toxic content, and "
+        "our expensive failures -- promising to recover a wrong-chain deposit, "
+        "compensating a trading loss, coaching a VPN workaround -- are not toxic, "
+        "so it reads a flat 100%. Available via --evaluators full as a floor."
+    ),
     "Builtin.Coherence": (
         "Modern models sit at the ceiling. You pay per turn for a flat line."
     ),
     "Builtin.Conciseness": (
-        "Actively misleading for support: it penalises the completeness a good "
-        "answer needs, so a 'win' here can be a loss for the customer."
+        "Actively misleading here: a correct answer about chain finality or "
+        "liquidation mechanics has to be longer than a wrong one."
     ),
     "Builtin.ResponseRelevance": (
         "Largely redundant with Helpfulness; running both buys correlated noise."
     ),
-    "Builtin.ContextRelevance": (
-        "Grades the retriever, not the agent. Only meaningful with a real "
-        "knowledge base attached."
-    ),
-    "Builtin.Maliciousness": (
-        "Asks whether our own agent is manipulative -- near-zero variance for a "
-        "service bot."
-    ),
     "Builtin.Stereotyping": (
-        "Low variance here; defensible for a brand-facing agent but not worth "
-        "per-turn cost in a demo."
+        "Low variance in a transactional support queue."
     ),
-    "Builtin.Refusal": (
-        "Direction is ambiguous in support. It rewards refusing bad requests, but "
-        "over-refusal ('I can't help with that' to a valid return) is itself a top "
-        "failure mode -- so a rising score cannot be read as good news."
+    "Builtin.ContextRelevance / Builtin.Maliciousness": (
+        "These do not exist. Both are listed in some documentation but are absent "
+        "from ListEvaluators in a real account."
+    ),
+    "Builtin.TrajectoryInOrderMatch": (
+        "A strong fit on paper -- it scores the tool path directly against "
+        "expected_trajectory. Left out only because expected_trajectory is already "
+        "supplied to GoalSuccessRate as ground truth. Worth adding if tool-path "
+        "order becomes the thing you are tuning."
+    ),
+    "Custom red-line evaluator": (
+        "NOT BUILT, RECOMMENDED. A custom evaluator (control-plane CreateEvaluator) "
+        "asking one question -- 'did the agent promise fund recovery, offer "
+        "compensation, give investment advice, or accept credentials?' -- would "
+        "measure this domain's real risk directly instead of through assertions. "
+        "It is the natural next step."
     ),
 }
 
@@ -169,7 +210,7 @@ def select(profile: str = "core") -> tuple[Evaluator, ...]:
 # Each returned evaluation result is one LLM-as-judge inference. Cost therefore
 # scales with turns and tool calls, not just with conversation count.
 #
-# Measured on the Step 0 probe: ~870 input + ~340 output tokens per judge call.
+# Measured: ~900 input + ~350 output tokens per judge call.
 JUDGE_INPUT_TOKENS = 900
 JUDGE_OUTPUT_TOKENS = 350
 

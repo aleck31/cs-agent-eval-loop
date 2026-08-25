@@ -13,17 +13,29 @@ from cs_eval.dataset import DatasetError, load_dataset
 from cs_eval.evaluate import BudgetExceeded, BudgetGuard, EvaluationClient, Score
 from cs_eval.report import NOISE_FLOOR, aggregate_metric, build_rows
 from cs_eval.spans import SCOPE_NAME, build_session_spans
-from cs_eval.tools import TOOL_SPECS, check_policy, lookup_order
+from cs_eval.tools import (
+    TOOL_SPECS,
+    check_policy,
+    lookup_account,
+    lookup_position,
+    lookup_transaction,
+)
+
+DATASET = "data/conversations.yaml"
 
 TURNS = [
     {
-        "user": "订单 12345 坏了",
-        "assistant": "已为您查询",
+        "user": "UID 88412337 的提币没到账",
+        "assistant": "已为您查询该笔提币",
         "tool_calls": [
-            {"name": "lookup_order", "args": {"order_id": "12345"}, "result": "{}"}
+            {
+                "name": "lookup_transaction",
+                "args": {"transaction_id": "W-20260815-7741"},
+                "result": "{}",
+            }
         ],
     },
-    {"user": "运费呢", "assistant": "免运费", "tool_calls": []},
+    {"user": "那我该怎么办", "assistant": "请联系接收方平台", "tool_calls": []},
 ]
 
 
@@ -72,9 +84,9 @@ def test_agent_span_carries_prompt_and_reply():
 def test_tool_span_names_and_payloads():
     spans, _ = _build()
     tool = [s for s in spans if s["attributes"]["openinference.span.kind"] == "TOOL"][0]
-    assert tool["attributes"]["tool.name"] == "lookup_order"
-    assert tool["attributes"]["gen_ai.tool.name"] == "lookup_order"
-    assert "12345" in tool["attributes"]["input.value"]
+    assert tool["attributes"]["tool.name"] == "lookup_transaction"
+    assert tool["attributes"]["gen_ai.tool.name"] == "lookup_transaction"
+    assert "W-20260815-7741" in tool["attributes"]["input.value"]
 
 
 def test_llm_span_advertises_available_tools():
@@ -82,7 +94,7 @@ def test_llm_span_advertises_available_tools():
     spans, _ = _build()
     llm = [s for s in spans if s["attributes"]["openinference.span.kind"] == "LLM"][0]
     schema_keys = [k for k in llm["attributes"] if k.startswith("llm.tools.")]
-    assert len(schema_keys) == len(TOOL_SPECS)
+    assert len(schema_keys) == len(TOOL_SPECS) == 4
 
 
 def test_ids_are_valid_hex_lengths():
@@ -108,7 +120,7 @@ def test_children_parent_to_agent_span():
 
 # --- dataset ---------------------------------------------------------------
 def test_shipped_dataset_loads():
-    conversations = load_dataset("data/conversations.yaml")
+    conversations = load_dataset(DATASET)
     assert len(conversations) == 12
     assert {c.lang for c in conversations} == {"zh", "en"}
     assert all(c.ground_truth.assertions for c in conversations)
@@ -116,8 +128,23 @@ def test_shipped_dataset_loads():
 
 def test_every_conversation_within_result_cap():
     """Evaluate keeps only the last 10 results, so long sessions lose early turns."""
-    for conversation in load_dataset("data/conversations.yaml"):
+    for conversation in load_dataset(DATASET):
         assert conversation.turn_count <= 5
+
+
+def test_dataset_covers_the_expensive_failure_modes():
+    """These categories are the reason this dataset exists; losing one is a regression."""
+    categories = {c.category for c in load_dataset(DATASET)}
+    for required in ("wrong_chain", "liquidation", "security", "compliance"):
+        assert required in categories, f"missing {required} coverage"
+
+
+def test_every_expected_tool_exists():
+    """A trajectory naming a tool we do not ship would silently never match."""
+    names = {spec["name"] for spec in TOOL_SPECS}
+    for conversation in load_dataset(DATASET):
+        for tool_name in conversation.ground_truth.expected_trajectory:
+            assert tool_name in names, f"{conversation.id} expects unknown tool {tool_name}"
 
 
 def test_rejects_missing_turns(tmp_path):
@@ -140,17 +167,58 @@ def test_rejects_duplicate_ids(tmp_path):
 
 
 # --- tools -----------------------------------------------------------------
-def test_lookup_order_known_and_unknown():
-    assert "delivered" in lookup_order.invoke({"order_id": "12345"})
-    assert "order_not_found" in lookup_order.invoke({"order_id": "99999"})
+def test_lookup_account_known_and_unknown():
+    assert "active" in lookup_account.invoke({"uid": "88412337"})
+    assert "account_not_found" in lookup_account.invoke({"uid": "00000000"})
+
+
+def test_security_hold_is_discoverable():
+    """cs-002 is only answerable if the hold shows up in the account record."""
+    assert "security_hold" in lookup_account.invoke({"uid": "88410092"})
+    assert "password_changed" in lookup_account.invoke({"uid": "88410092"})
+
+
+def test_risk_review_detail_is_withheld_in_the_data():
+    """The agent cannot leak review criteria that the tool never returns."""
+    record = lookup_account.invoke({"uid": "88415566"})
+    assert "withheld" in record
+
+
+def test_wrong_chain_transaction_is_marked_unrecoverable():
+    record = lookup_transaction.invoke({"transaction_id": "D-20260818-3310"})
+    assert "chain_mismatch" in record
+    assert '"recoverable": false' in record.lower()
+
+
+def test_liquidation_record_exposes_mark_price():
+    """The whole liquidation explanation hinges on mark price vs last traded price."""
+    record = lookup_position.invoke({"uid": "88412337", "symbol": "BTCUSDT"})
+    assert "mark_price_at_liquidation" in record
+    assert "lowest_last_traded_price" in record
+
+
+def test_copy_follow_failure_reason_is_available():
+    record = lookup_position.invoke({"uid": "88419901", "symbol": "DOGEUSDT"})
+    assert "insufficient_available_margin" in record
 
 
 def test_check_policy_rejects_unknown_topic():
     assert "unknown_topic" in check_policy.invoke({"topic": "nonsense"})
 
 
-def test_outside_window_policy_demands_escalation():
-    assert "escalated" in check_policy.invoke({"topic": "outside_window"}).lower()
+def test_wrong_chain_policy_forbids_promising_recovery():
+    text = check_policy.invoke({"topic": "wrong_chain"}).lower()
+    assert "cannot recover" in text
+
+
+def test_liquidation_policy_states_no_compensation():
+    text = check_policy.invoke({"topic": "liquidation"}).lower()
+    assert "does not compensate" in text
+
+
+def test_credentials_policy_forbids_accepting_secrets():
+    text = check_policy.invoke({"topic": "security_credentials"}).lower()
+    assert "never" in text and "seed phrase" in text
 
 
 # --- report ----------------------------------------------------------------
@@ -166,10 +234,34 @@ def _score(evaluator_id: str, value: float, conversation_id: str = "c1") -> Scor
     )
 
 
-def test_all_builtins_are_higher_is_better():
-    """Verified against the live API: even Harmfulness returns 1.0 for the good case."""
+def test_all_evaluators_are_higher_is_better():
+    """Verified live: Harmfulness, Refusal and PIILeakage all return 1.0 for good."""
     for evaluator in cfg.select("full"):
         assert evaluator.higher_is_better
+
+
+def test_core_set_covers_outcome_and_tools():
+    ids = {e.evaluator_id for e in cfg.select("core")}
+    assert "Builtin.GoalSuccessRate" in ids
+    assert "Builtin.ToolSelectionAccuracy" in ids
+    assert "Builtin.ToolParameterAccuracy" in ids
+
+
+def test_measured_and_rejected_evaluators_stay_out_of_core():
+    """Both were run against this dataset and removed on evidence; see EXCLUDED."""
+    ids = {e.evaluator_id for e in cfg.select("core")}
+    for rejected in ("Builtin.Refusal", "ThirdParty.DeepEval.PIILeakage"):
+        assert rejected not in ids
+        assert rejected in cfg.EXCLUDED
+
+
+def test_red_lines_are_encoded_as_assertions():
+    """With Refusal gone, assertions are the instrument enforcing the red lines."""
+    conversations = {c.id: c for c in load_dataset(DATASET)}
+    joined = " ".join(conversations["cs-012"].ground_truth.assertions).lower()
+    assert "did not provide investment" in joined
+    joined = " ".join(conversations["cs-003"].ground_truth.assertions).lower()
+    assert "compensation" in joined
 
 
 def test_aggregate_ignores_failed_scores():
@@ -185,7 +277,7 @@ def test_small_change_is_reported_as_flat():
     evaluator = cfg.select("core")[1]
     before = [_score(evaluator.evaluator_id, 0.80)]
     after = [_score(evaluator.evaluator_id, 0.80 + NOISE_FLOOR / 2)]
-    row = [r for r in build_rows(before, after, (evaluator,))][0]
+    row = build_rows(before, after, (evaluator,))[0]
     assert row.verdict == "flat"
 
 
@@ -230,7 +322,7 @@ def test_unknown_evaluator_profile_rejected():
 
 
 def test_reference_inputs_carry_ground_truth():
-    conversation = load_dataset("data/conversations.yaml")[1]  # cs-002
+    conversation = load_dataset(DATASET)[2]  # cs-003, wrong chain
     refs = EvaluationClient._reference_inputs(conversation, "sess-9")
     assert refs[0]["context"]["spanContext"]["sessionId"] == "sess-9"
     assert refs[0]["assertions"]
