@@ -131,9 +131,23 @@ def test_children_parent_to_agent_span():
 # --- dataset ---------------------------------------------------------------
 def test_shipped_dataset_loads():
     conversations = load_dataset(DATASET)
-    assert len(conversations) == 12
+    assert len(conversations) == 18
     assert {c.lang for c in conversations} == {"zh", "en"}
     assert all(c.ground_truth.assertions for c in conversations)
+
+
+def test_holdout_is_every_third_case():
+    """Fixed by rule before any v2 result was seen, so the split cannot be cherry-picked."""
+    for c in load_dataset(DATASET):
+        expected = "holdout" if int(c.id.removeprefix("cs-")) % 3 == 0 else "dev"
+        assert c.split == expected, c.id
+
+
+def test_rejects_unknown_split(tmp_path):
+    bad = tmp_path / "split.yaml"
+    bad.write_text("conversations:\n  - id: x\n    split: test\n    user_turns: ['a']\n", encoding="utf-8")
+    with pytest.raises(DatasetError):
+        load_dataset(bad)
 
 
 def test_every_conversation_within_result_cap():
@@ -184,7 +198,7 @@ def test_fingerprint_tracks_ground_truth_not_display_fields(tmp_path):
 def test_committed_fixtures_were_scored_on_the_shipped_golden_set():
     """Editing the golden set without re-running live would make replay compare against a different yardstick."""
     fingerprint = load_golden_set(DATASET).fingerprint
-    for variant in ("baseline", "improved"):
+    for variant in ("baseline-sonnet-4-5", "baseline", "improved"):
         payload = json.loads(Path(f"fixtures/{variant}.json").read_text(encoding="utf-8"))
         assert payload["golden_set_fingerprint"] == fingerprint, variant
 
@@ -405,13 +419,13 @@ def test_internal_case_id_leak_ignores_chain_names():
 
 
 def test_red_lines_on_committed_fixtures():
-    """Pins the calibration: the bad baseline offers money, the improved prompt never does."""
-    def breaching(variant):
-        payload = json.loads(Path(f"fixtures/{variant}.json").read_text(encoding="utf-8"))
+    """Pins the calibration: Sonnet 4.5 on the bad baseline offers money, Sonnet 5.5 never does."""
+    def breaching(name):
+        payload = json.loads(Path(f"fixtures/{name}.json").read_text(encoding="utf-8"))
         return cases_breaching(check_all(payload["transcripts"]), COMPENSATION_OFFER)
 
-    assert len(breaching("baseline")) >= 7
-    assert breaching("improved") == set()
+    assert len(breaching("baseline-sonnet-4-5")) >= 7
+    assert breaching("baseline") == set()
 
 
 # --- judge stability ---------------------------------------------------------
