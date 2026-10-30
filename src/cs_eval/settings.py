@@ -36,7 +36,7 @@ DEFAULTS: dict[str, str] = {
     "CS_EVAL_JUDGE_MODEL_IDS": (
         "global.openai.gpt-6.1-terra,global.anthropic.claude-sonnet-5-5,global.xai.grok-4.7"
     ),
-    "CS_EVAL_MAX_USD": "5.00",
+    "CS_EVAL_MAX_USD": "8.00",
     "CS_EVAL_EVALUATORS": "core",
     "CS_EVAL_DATA": "data/golden_set.yaml",
     "CS_EVAL_BASELINE": "baseline",

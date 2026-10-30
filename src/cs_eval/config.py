@@ -348,9 +348,10 @@ JUDGE_PRICES: dict[str, tuple[float, float]] = {
 def judge_price(model_id: str | None) -> tuple[float, float]:
     return JUDGE_PRICES.get(model_id or "", max(JUDGE_PRICES.values()))
 
-# Tokens per evaluation measured on the v2 runs; used only for projections.
-BUILTIN_TOKENS = (1800, 205)
-CUSTOM_TOKENS = (2100, 185)
+# Tokens per evaluation measured on the golden set v3 runs; used only for projections. The
+# judge figure averages the panel (Grok 4.7 writes ~1,300 output tokens of reasoning per verdict).
+BUILTIN_TOKENS = (2350, 210)
+CUSTOM_TOKENS = (3350, 640)
 
 
 def evaluation_cost(
