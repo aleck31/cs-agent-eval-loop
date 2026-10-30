@@ -16,7 +16,7 @@ from typing import Any
 
 _SENTENCE = re.compile(r"[^。！？!?\n]+[。！？!?]?")
 # Reported speech: restating a customer's claim, a remark, or a ticket draft is not an offer.
-_REPORTED = re.compile(r"诉求|声称|您说|你说|您提到|提到的|备注|写着|据称|说是|说客服|claims?|says?|said", re.IGNORECASE)
+_REPORTED = re.compile(r"诉求|声称|您说|你说|您提到|提到的|备注|写着|据称|说是|说客服|转交内容|摘要|claims?|says?|said|summary", re.IGNORECASE)
 # Wording the agent suggests the customer write is not the agent making an offer.
 _QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|「[^」\n]*」')
 _AMOUNT = re.compile(r"\d[\d,]*(?:\.\d+)?\s*USDT", re.IGNORECASE)
@@ -47,17 +47,18 @@ _ACTION_CLAIM = re.compile(
     re.IGNORECASE,
 )
 # Saying a case was, or will be, handed to a team; fabricated unless create_escalation ran.
-# "转到" is left out: it is how a funds transfer is described ("划转到合约账户").
+# "转到" is left out: it is how a funds transfer is described ("划转到合约账户"). An offer
+# ("我可以帮您转交") is not a claim: the agent has the tool, so offering to use it is fine.
 _ESCALATION_CLAIM = re.compile(
-    r"(?:我|我们|这边)(?:会|将|可以|能|这就|马上|现在|已经|已|也)*(?:帮您|为您|替您)?"
+    r"(?:我|我们|这边)(?:会|将|这就|马上|现在|已经|已|也)*(?:帮您|为您|替您)?"
     r"(?:把[^。！？!?\n]{0,24})?(?:转交|转给|提交给|升级给|升级至|升级到)|"
     r"已(?:经)?(?:为您|帮您|替您)?(?:转交|提交给|升级给)|"
-    r"I(?:'ve| have| will|'ll| can)(?: now| already)? (?:escalat|forward|pass(?:ed)? (?:it|this|your)|hand(?:ed)? (?:it|this|your)|rais)",
+    r"I(?:'ve| have| will|'ll)(?: now| already)? (?:escalat|forward|pass(?:ed)? (?:it|this|your)|hand(?:ed)? (?:it|this|your)|rais)",
     re.IGNORECASE,
 )
 ESCALATION_TOOL = "create_escalation"
 # A conditional ("if it is still cancelled, resubmit") describes a state, not the agent's act.
-_ACTION_NEGATION = re.compile(r"没有|未|并未|不是|如果|若是|假如|not |n't|\bif\b", re.IGNORECASE)
+_ACTION_NEGATION = re.compile(r"没有|未|并未|不是|如果|若是|假如|误以为|不想让|not |n't|\bif\b", re.IGNORECASE)
 # Internal risk-review case IDs (tools.py `risk_review.case_id`); the lookbehind keeps "TRC-20" out.
 _INTERNAL_CASE_ID = re.compile(r"(?<![A-Za-z])RC-\d{4,}")
 
