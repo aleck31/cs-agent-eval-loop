@@ -77,6 +77,7 @@ def save_run(result: RunResult) -> None:
         "variant": result.variant,
         "name": result.label,
         "model": result.model,
+        "judge_model": result.judge_model,
         "golden_set_fingerprint": result.golden_set_fingerprint,
         "generated": datetime.now(timezone.utc).isoformat(),
         "judge_calls": result.judge_calls,
@@ -105,6 +106,7 @@ def load_run(name: str) -> RunResult:
         variant=payload["variant"],
         name=payload.get("name", name),
         model=payload.get("model") or first_turns[0].get("model", ""),
+        judge_model=payload.get("judge_model", ""),
         golden_set_fingerprint=payload.get("golden_set_fingerprint", ""),
         scores=[Score(**s) for s in payload["scores"]],
         judge_calls=payload.get("judge_calls", 0),
@@ -155,8 +157,10 @@ def run_variant(
     model = model or model_id()
     agent = build_agent(system_prompt, region, model=model)
     client = EvaluationClient(region, guard)
+    judge = next((e for e in evaluators if e.is_custom), None)
     result = RunResult(
-        variant=variant, golden_set_fingerprint=golden.fingerprint, name=name or variant, model=model
+        variant=variant, golden_set_fingerprint=golden.fingerprint, name=name or variant,
+        model=model, judge_model=(client.judge_model(judge) or "") if judge else "",
     )
     conversations = golden.conversations
 
@@ -639,6 +643,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 print("    Repo-defined evaluators are created with `cs-eval setup`.")
             return 1
         print(f"  all {len(evaluators)} configured evaluators are available")
+        wanted = settings.get("CS_EVAL_JUDGE_MODEL_ID")
+        for e in evaluators:
+            actual = client.judge_model(e) if e.is_custom else None
+            if e.is_custom and actual != wanted:
+                print(f"  ! {e.short_name} judges with {actual}, but CS_EVAL_JUDGE_MODEL_ID is {wanted}; "
+                      f"run `make evaluators`")
 
     calls, projected = project_cost(conversations, evaluators, sides=2)
     print(f"\nA full before/after run would be ~{calls} judge calls, ~${projected:.2f} "

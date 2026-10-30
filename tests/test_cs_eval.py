@@ -543,6 +543,8 @@ def test_describing_a_ticket_request_is_not_an_offer():
 def test_custom_evaluations_pay_a_fee_plus_their_judge_model_tokens():
     """AgentCore list prices: built-in bundles the judge model; custom bills both separately."""
     builtin = cfg.evaluation_cost(False, input_tokens=1000, output_tokens=1000)
-    custom = cfg.evaluation_cost(True, input_tokens=1000, output_tokens=1000)
+    gpt = cfg.evaluation_cost(True, 1000, 1000, judge_model="us.openai.gpt-6.1-terra")
+    unknown = cfg.evaluation_cost(True, 1000, 1000, judge_model="some.new-model")
     assert builtin == pytest.approx(0.0024 + 0.012)
-    assert custom == pytest.approx(0.0015 + 0.0022 + 0.011)
+    assert gpt == pytest.approx(0.0015 + 0.0011 + 0.0055)
+    assert unknown == pytest.approx(0.0015 + 0.0022 + 0.011)  # dearest listed rate

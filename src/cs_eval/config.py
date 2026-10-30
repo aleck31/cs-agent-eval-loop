@@ -291,29 +291,36 @@ CUSTOM_FEE_PER_EVALUATION = 0.0015
 AGENT_PRICE_INPUT_PER_1K = 0.0022
 AGENT_PRICE_OUTPUT_PER_1K = 0.011
 
-# CS_EVAL_JUDGE_MODEL_ID rate, USD per 1K: Sonnet 5.5 as shipped; change it with the model.
-JUDGE_PRICE_INPUT_PER_1K = 0.0022
-JUDGE_PRICE_OUTPUT_PER_1K = 0.011
+# Judge-model rates, USD per 1K (input, output), from Bedrock model cards (checked
+# 2026-10-30). An unlisted judge is priced at the dearest listed rate, so budgets err high.
+JUDGE_PRICES: dict[str, tuple[float, float]] = {
+    "us.openai.gpt-6.1-terra": (0.0011, 0.0055),
+    "us.anthropic.claude-sonnet-5-5": (0.0022, 0.011),
+}
 
-# Tokens per evaluation measured on the committed v2 runs; used only for projections.
+
+def judge_price(model_id: str | None) -> tuple[float, float]:
+    return JUDGE_PRICES.get(model_id or "", max(JUDGE_PRICES.values()))
+
+# Tokens per evaluation measured on the committed v2 runs (red-line judge on GPT-6.1 Terra);
+# used only for projections.
 BUILTIN_TOKENS = (1800, 205)
-CUSTOM_TOKENS = (3200, 355)
+CUSTOM_TOKENS = (2100, 185)
 
 
-def evaluation_cost(custom: bool, input_tokens: int, output_tokens: int) -> float:
-    """USD for one returned evaluation result."""
+def evaluation_cost(
+    custom: bool, input_tokens: int, output_tokens: int, judge_model: str | None = None
+) -> float:
+    """USD for one returned evaluation result; custom results need the judge model to price."""
     if custom:
-        return (
-            CUSTOM_FEE_PER_EVALUATION
-            + input_tokens / 1000 * JUDGE_PRICE_INPUT_PER_1K
-            + output_tokens / 1000 * JUDGE_PRICE_OUTPUT_PER_1K
-        )
+        price_in, price_out = judge_price(judge_model)
+        return CUSTOM_FEE_PER_EVALUATION + input_tokens / 1000 * price_in + output_tokens / 1000 * price_out
     return input_tokens / 1000 * BUILTIN_INPUT_PER_1K + output_tokens / 1000 * BUILTIN_OUTPUT_PER_1K
 
 
-def projected_cost_per_call(evaluator: Evaluator) -> float:
+def projected_cost_per_call(evaluator: Evaluator, judge_model: str | None = None) -> float:
     tokens = CUSTOM_TOKENS if evaluator.is_custom else BUILTIN_TOKENS
-    return evaluation_cost(evaluator.is_custom, *tokens)
+    return evaluation_cost(evaluator.is_custom, *tokens, judge_model=judge_model)
 
 
 def estimate_judge_calls(

@@ -81,6 +81,7 @@ class RunResult:
     golden_set_fingerprint: str = ""
     name: str = ""  # fixture name; defaults to the variant
     model: str = ""  # agent model the transcripts came from
+    judge_model: str = ""  # model behind the custom judge, which prices its results
     scores: list[Score] = field(default_factory=list)
     judge_calls: int = 0
     input_tokens: int = 0
@@ -95,7 +96,10 @@ class RunResult:
     @property
     def cost_usd(self) -> float:
         return sum(
-            evaluation_cost(s.evaluator_id.startswith(CUSTOM_PREFIX), s.input_tokens, s.output_tokens)
+            evaluation_cost(
+                s.evaluator_id.startswith(CUSTOM_PREFIX), s.input_tokens, s.output_tokens,
+                judge_model=self.judge_model,
+            )
             for s in self.scores
             if s.input_tokens or s.output_tokens
         )
@@ -141,6 +145,7 @@ class EvaluationClient:
         self._data = boto3.client("bedrock-agentcore", region_name=region, config=config)
         self._control = boto3.client("bedrock-agentcore-control", region_name=region)
         self._custom_ids: dict[str, str] | None = None
+        self._judge_models: dict[str, str | None] = {}
 
     # -- startup validation --------------------------------------------------
     def list_evaluators(self) -> list[dict[str, Any]] | None:
@@ -194,6 +199,20 @@ class EvaluationClient:
                 f"{evaluator.short_name} is not created in this account/region; run `cs-eval setup`"
             )
         return resolved
+
+    def judge_model(self, evaluator: Evaluator) -> str | None:
+        """The model a custom LLM judge is configured with in this account, if any."""
+        if not evaluator.is_custom:
+            return None
+        if evaluator.evaluator_id not in self._judge_models:
+            model = None
+            try:
+                config = self._control.get_evaluator(evaluatorId=self.resolve(evaluator))["evaluatorConfig"]
+                model = config["llmAsAJudge"]["modelConfig"]["bedrockEvaluatorModelConfig"]["modelId"]
+            except (ClientError, MissingEvaluator, KeyError):
+                pass
+            self._judge_models[evaluator.evaluator_id] = model
+        return self._judge_models[evaluator.evaluator_id]
 
     def evaluator_arn(self, evaluator: Evaluator) -> str:
         """ARN form, which start-recommendation requires where Evaluate takes an ID."""
@@ -310,7 +329,8 @@ class EvaluationClient:
                 output_tokens += usage.get("outputTokens", 0)
                 if usage:
                     cost += evaluation_cost(
-                        evaluator.is_custom, usage.get("inputTokens", 0), usage.get("outputTokens", 0)
+                        evaluator.is_custom, usage.get("inputTokens", 0), usage.get("outputTokens", 0),
+                        judge_model=self.judge_model(evaluator),
                     )
                 context = (result.get("context") or {}).get("spanContext") or {}
 
