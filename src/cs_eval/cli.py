@@ -40,6 +40,7 @@ from cs_eval.evaluate import (
     RunResult,
     Score,
     project_cost,
+    vote,
 )
 from cs_eval.diagnose import by_layer, diagnose
 from cs_eval.redlines import check_all
@@ -540,6 +541,77 @@ def _propose_with_agentcore(args: argparse.Namespace, baseline: RunResult, dev_i
     return 0
 
 
+def cmd_rejudge(args: argparse.Namespace) -> int:
+    """Fill every configured judge's vote on saved transcripts; drop judges no longer configured."""
+    golden = _load_golden(args.data, None)
+    by_id = {c.id: c for c in golden.conversations}
+    evaluators = cfg.select(args.evaluators)
+    judges = [e for e in evaluators if e.judge_model]
+    voted = [e for e in evaluators if e.voted]
+    names = args.fixtures.split(",") if args.fixtures else sorted(p.stem for p in FIXTURES.glob("*.json"))
+    runs = {name: load_run(name) for name in names}
+
+    def missing(run: RunResult, judge: cfg.Evaluator) -> list[str]:
+        done = {s.conversation_id for s in run.scores if s.evaluator_id == judge.evaluator_id and s.ok}
+        return [t["conversation_id"] for t in run.transcripts if t["conversation_id"] not in done]
+
+    todo = {(name, j.evaluator_id): missing(run, j) for name, run in runs.items() for j in judges}
+    projected = sum(
+        len(cases) * cfg.projected_cost_per_call(j)
+        for (_, eid), cases in todo.items() for j in judges if j.evaluator_id == eid
+    )
+    count = sum(len(cases) for cases in todo.values())
+    print(f"Rejudge:    {len(runs)} fixture(s), {count} missing judge votes, ~${projected:.2f} "
+          f"(ceiling ${args.max_usd:.2f})")
+    guard = BudgetGuard(args.max_usd)
+    try:
+        guard.check_before(projected)
+    except BudgetExceeded as exc:
+        print(f"\nSTOPPING: {exc}", file=sys.stderr)
+        return 3
+    if count and not args.yes and input("Proceed and spend? [y/N] ").strip().lower() != "y":
+        print("Aborted.")
+        return 0
+
+    client = EvaluationClient(args.region, guard)
+    configured = {j.evaluator_id for j in judges} | {v.evaluator_id for v in voted}
+    incomplete = 0
+    for name, run in runs.items():
+        prompt = (PROMPTS / f"{run.variant}.md").read_text(encoding="utf-8")
+        transcripts = {t["conversation_id"]: t for t in run.transcripts}
+        stale = [s.evaluator_id for s in run.scores if s.evaluator_id.startswith(cfg.CUSTOM_PREFIX)
+                 and s.evaluator_id not in configured]
+        scores = [s for s in run.scores if not s.evaluator_id.startswith(cfg.CUSTOM_PREFIX)
+                  or (s.evaluator_id in {j.evaluator_id for j in judges} and s.ok)]
+        failures = [f for f in run.failures if "cs_redline" not in f]
+        for judge in judges:
+            for cid in todo[(name, judge.evaluator_id)]:
+                new, _, _, fails = client.score_conversation(
+                    conversation=by_id[cid], transcript_turns=transcripts[cid]["turns"],
+                    evaluators=(judge,), system_prompt=prompt, tool_specs=TOOL_SPECS,
+                )
+                scores.extend(new)
+                failures.extend(fails)
+        for vote_evaluator in voted:
+            for cid in transcripts:
+                scores.append(vote(cid, vote_evaluator, judges, scores))
+        incomplete += sum(1 for s in scores if s.evaluator_id in {v.evaluator_id for v in voted} and not s.ok)
+        run.scores = scores
+        run.failures = failures
+        run.judge_models = {j.evaluator_id: client.judge_model(j) or j.judge_model for j in judges}
+        run.judge_calls = sum(1 for s in scores if s.ok and not any(s.evaluator_id == v.evaluator_id for v in voted))
+        run.input_tokens = sum(s.input_tokens for s in scores)
+        run.output_tokens = sum(s.output_tokens for s in scores)
+        save_run(run)
+        dropped = f", dropped {len(set(stale))} unconfigured judge(s)" if stale else ""
+        print(f"  {name}: votes complete for {len(transcripts)} cases{dropped}")
+    print(f"\nSpend this run: ${guard.spent_usd:.2f}")
+    if incomplete:
+        print(f"{incomplete} case(s) still miss a vote; re-run `cs-eval rejudge`.", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_stability(args: argparse.Namespace) -> int:
     """Re-score saved transcripts N times to measure judge repeatability."""
     golden = _load_golden(args.data, None)
@@ -725,6 +797,14 @@ def build_parser() -> argparse.ArgumentParser:
                          help="bedrock: one model call over judge explanations; "
                               "agentcore: start-recommendation steered by GoalSuccessRate")
     propose.set_defaults(func=cmd_propose)
+
+    rejudge = subparsers.add_parser(
+        "rejudge", help="fill missing red-line judge votes on saved runs and recompute the vote"
+    )
+    rejudge.add_argument("--fixtures", default="", help="comma-separated fixture names (default: all)")
+    rejudge.add_argument("--max-usd", type=float, default=settings.get_float("CS_EVAL_MAX_USD"))
+    rejudge.add_argument("-y", "--yes", action="store_true")
+    rejudge.set_defaults(func=cmd_rejudge)
 
     stability = subparsers.add_parser(
         "stability", help="re-score saved transcripts N times to measure judge noise"

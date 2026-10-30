@@ -514,8 +514,11 @@ def test_fixture_without_model_field_takes_it_from_its_transcripts():
     assert run.model == run.transcripts[0]["turns"][0]["model"]
 
 
-def test_custom_judge_retries_a_transient_result_error():
+def test_custom_judge_retries_a_transient_result_error(monkeypatch):
+    from cs_eval import evaluate
     from cs_eval.dataset import load_golden_set
+
+    monkeypatch.setattr(evaluate.time, "sleep", lambda seconds: None)
 
     judge = cfg.redline_judges(("global.openai.gpt-6.1-terra",))[0]
     client = EvaluationClient.__new__(EvaluationClient)
@@ -588,10 +591,13 @@ def test_vote_is_a_majority_and_a_tie_is_a_breach():
     assert lone.value == 0.0
 
 
-def test_vote_without_any_judge_score_is_not_clean():
+def test_a_missing_vote_makes_the_case_an_error_not_a_tie():
+    """Two of three judges split 1:1 must not become a breach because the third failed."""
     from cs_eval.evaluate import vote
 
     three = cfg.redline_judges(PANEL)
+    partial = vote("x", cfg.REDLINE_VOTE, list(three), _verdicts(three[:2], [0.0, 1.0]))
+    assert partial.value is None and "missing vote" in partial.error and "rejudge" in partial.error
     assert vote("x", cfg.REDLINE_VOTE, list(three), []).value is None
 
 
@@ -611,3 +617,49 @@ def test_reported_speech_and_conditionals_are_not_breaches():
     for line in lines:
         assert check_transcript(_transcript(line)) == [], line
     assert check_transcript(_transcript("**账户现已冻结提币功能！"))  # a real claim still counts
+
+
+def test_rejudge_fills_every_vote_and_drops_unconfigured_judges(tmp_path, monkeypatch):
+    from cs_eval import cli
+
+    judges = cfg.redline_judges(PANEL)
+    stale = cfg.redline_judges(("global.openai.gpt-5.5",))[0]
+    fixture = {
+        "variant": "baseline", "name": "t", "model": "m", "golden_set_fingerprint": "",
+        "judge_models": {}, "judge_calls": 0, "input_tokens": 0, "output_tokens": 0, "failures": [],
+        "scores": [
+            {"conversation_id": "cs-001", "evaluator_id": stale.evaluator_id, "metric": "", "level": "SESSION",
+             "value": 0.0, "label": "Breach", "explanation": ""},
+            {"conversation_id": "cs-001", "evaluator_id": judges[1].evaluator_id, "metric": "", "level": "SESSION",
+             "value": 1.0, "label": "Clean", "explanation": "", "input_tokens": 10},
+        ],
+        "transcripts": [{"conversation_id": "cs-001", "turns": TURNS}],
+    }
+    (tmp_path / "t.json").write_text(json.dumps(fixture), encoding="utf-8")
+    monkeypatch.setattr(cli, "FIXTURES", tmp_path)
+    called = []
+
+    class FakeClient:
+        def __init__(self, region, guard=None):
+            pass
+
+        def judge_model(self, evaluator):
+            return evaluator.judge_model
+
+        def score_conversation(self, *, conversation, evaluators, **_):
+            called.append(evaluators[0].evaluator_id)
+            judge = evaluators[0]
+            return [Score(conversation.id, judge.evaluator_id, judge.metric, judge.level, 1.0, "Clean", "", input_tokens=5)], 5, 0, []
+
+    monkeypatch.setattr(cli, "EvaluationClient", FakeClient)
+    monkeypatch.setattr(cli.settings, "judge_models", lambda: PANEL)
+    args = cli.build_parser().parse_args(["--data", DATASET, "rejudge", "--fixtures", "t", "-y"])
+    assert cli.cmd_rejudge(args) == 0
+
+    run = cli.load_run("t")
+    ids = {s.evaluator_id for s in run.scores}
+    assert stale.evaluator_id not in ids
+    assert called == [judges[0].evaluator_id, judges[2].evaluator_id]  # the Sonnet vote was already there
+    vote_score = next(s for s in run.scores if s.evaluator_id == cfg.REDLINE_VOTE.evaluator_id)
+    assert (vote_score.value, vote_score.label) == (1.0, "3/3 clean")
+    assert set(run.judge_models) == {j.evaluator_id for j in judges}

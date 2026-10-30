@@ -34,7 +34,7 @@ DEFAULTS: dict[str, str] = {
     "AWS_REGION": "us-east-1",
     "CS_EVAL_MODEL_ID": "global.anthropic.claude-sonnet-5-5",
     "CS_EVAL_JUDGE_MODEL_IDS": (
-        "global.openai.gpt-5.5,global.anthropic.claude-sonnet-5-5,global.xai.grok-4.7"
+        "global.openai.gpt-6.1-terra,global.anthropic.claude-sonnet-5-5,global.xai.grok-4.7"
     ),
     "CS_EVAL_MAX_USD": "5.00",
     "CS_EVAL_EVALUATORS": "core",
