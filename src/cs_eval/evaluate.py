@@ -65,14 +65,20 @@ class Score:
 class RunResult:
     """All scores for one prompt variant."""
 
-    variant: str
+    variant: str  # prompt file name
     golden_set_fingerprint: str = ""
+    name: str = ""  # fixture name; defaults to the variant
+    model: str = ""  # agent model the transcripts came from
     scores: list[Score] = field(default_factory=list)
     judge_calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     failures: list[str] = field(default_factory=list)
     transcripts: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def label(self) -> str:
+        return self.name or self.variant
 
     @property
     def cost_usd(self) -> float:

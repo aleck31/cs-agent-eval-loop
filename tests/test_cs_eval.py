@@ -488,3 +488,13 @@ def test_missing_custom_evaluator_says_to_run_setup():
     client._custom_ids = {}
     with pytest.raises(MissingEvaluator, match="cs-eval setup"):
         client.resolve(judge)
+
+
+# --- fixtures and arms ---------------------------------------------------------
+def test_fixture_without_model_field_takes_it_from_its_transcripts():
+    """Arms differ by model or prompt; the report labels whichever changed."""
+    from cs_eval.cli import load_run
+
+    run = load_run("baseline")
+    assert run.label == "baseline"
+    assert run.model == run.transcripts[0]["turns"][0]["model"]

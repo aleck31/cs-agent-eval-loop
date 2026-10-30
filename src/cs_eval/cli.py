@@ -24,7 +24,7 @@ from pathlib import Path
 
 from cs_eval import config as cfg
 from cs_eval import settings
-from cs_eval.agent import build_agent, run_conversation
+from cs_eval.agent import build_agent, model_id, run_conversation
 from cs_eval.dataset import (
     DEV,
     HOLDOUT,
@@ -67,14 +67,16 @@ REPORTS = ROOT / "reports"
 
 
 # --- persistence ------------------------------------------------------------
-def _fixture_path(variant: str) -> Path:
-    return FIXTURES / f"{variant}.json"
+def _fixture_path(name: str) -> Path:
+    return FIXTURES / f"{name}.json"
 
 
 def save_run(result: RunResult) -> None:
     FIXTURES.mkdir(exist_ok=True)
     payload = {
         "variant": result.variant,
+        "name": result.label,
+        "model": result.model,
         "golden_set_fingerprint": result.golden_set_fingerprint,
         "generated": datetime.now(timezone.utc).isoformat(),
         "judge_calls": result.judge_calls,
@@ -84,28 +86,32 @@ def save_run(result: RunResult) -> None:
         "scores": [asdict(s) for s in result.scores],
         "transcripts": result.transcripts,
     }
-    _fixture_path(result.variant).write_text(
+    _fixture_path(result.label).write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
 
-def load_run(variant: str) -> RunResult:
-    path = _fixture_path(variant)
+def load_run(name: str) -> RunResult:
+    path = _fixture_path(name)
     if not path.exists():
         raise FileNotFoundError(
-            f"no fixture for '{variant}' at {path}. Run in --mode live first, "
+            f"no fixture '{name}' at {path}. Run in --mode live first, "
             f"or check the committed fixtures."
         )
     payload = json.loads(path.read_text(encoding="utf-8"))
+    transcripts = payload.get("transcripts", [])
+    first_turns = transcripts[0]["turns"] if transcripts and transcripts[0]["turns"] else [{}]
     return RunResult(
         variant=payload["variant"],
+        name=payload.get("name", name),
+        model=payload.get("model") or first_turns[0].get("model", ""),
         golden_set_fingerprint=payload.get("golden_set_fingerprint", ""),
         scores=[Score(**s) for s in payload["scores"]],
         judge_calls=payload.get("judge_calls", 0),
         input_tokens=payload.get("input_tokens", 0),
         output_tokens=payload.get("output_tokens", 0),
         failures=payload.get("failures", []),
-        transcripts=payload.get("transcripts", []),
+        transcripts=transcripts,
     )
 
 
@@ -120,7 +126,7 @@ def _load_golden(path: str, limit: int | None) -> GoldenSet:
 def golden_set_mismatches(golden: GoldenSet, *runs: RunResult) -> list[str]:
     """Fixtures scored on a different golden set cannot be compared like-for-like."""
     return [
-        f"fixtures/{run.variant}.json was scored on golden set "
+        f"fixtures/{run.label}.json was scored on golden set "
         f"{run.golden_set_fingerprint or 'unknown'}, but {golden.name} is now "
         f"{golden.fingerprint}; re-run live before trusting this comparison"
         for run in runs
@@ -136,6 +142,8 @@ def run_variant(
     evaluators: tuple[cfg.Evaluator, ...],
     region: str,
     guard: BudgetGuard,
+    model: str | None = None,
+    name: str | None = None,
     verbose: bool = True,
 ) -> RunResult:
     """Generate transcripts for one prompt variant, then score them."""
@@ -144,9 +152,12 @@ def run_variant(
         raise FileNotFoundError(f"prompt not found: {prompt_path}")
     system_prompt = prompt_path.read_text(encoding="utf-8")
 
-    agent = build_agent(system_prompt, region)
+    model = model or model_id()
+    agent = build_agent(system_prompt, region, model=model)
     client = EvaluationClient(region, guard)
-    result = RunResult(variant=variant, golden_set_fingerprint=golden.fingerprint)
+    result = RunResult(
+        variant=variant, golden_set_fingerprint=golden.fingerprint, name=name or variant, model=model
+    )
     conversations = golden.conversations
 
     for index, conversation in enumerate(conversations, start=1):
@@ -160,6 +171,8 @@ def run_variant(
         transcript = run_conversation(
             agent, conversation.id, variant, conversation.user_turns
         )
+        for turn in transcript.turns:
+            turn.model = model
         result.transcripts.append(transcript.as_dict())
 
         scores, _, _, failures = client.score_conversation(
@@ -273,7 +286,13 @@ def emit_report(
         evaluators,
     )
     cells = build_case_matrix(before.scores, after.scores, evaluators, conversations)
-    diff = prompt_diff(before.variant, after.variant)
+    change = []
+    if before.variant != after.variant:
+        change.append(f"prompts/{before.variant}.md -> prompts/{after.variant}.md")
+    if before.model != after.model:
+        change.append(f"model {before.model or '?'} -> {after.model or '?'}")
+    diff = (prompt_diff(before.variant, after.variant) if before.variant != after.variant
+            else ["(prompt unchanged)"])
     failures = before.failures + after.failures
     judge_calls = before.judge_calls + after.judge_calls
 
@@ -286,8 +305,7 @@ def emit_report(
         "cells": cells,
         "conversations": conversations,
         "golden_set_label": golden.label,
-        "baseline_name": before.variant,
-        "improved_name": after.variant,
+        "change": change or ["(nothing: same prompt and model)"],
         "judge_calls": judge_calls,
         "cost_usd": cost_usd,
         "duration_s": duration_s,
@@ -400,7 +418,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     evaluators = cfg.select(args.evaluators)
 
     calls, projected = project_cost(conversations, evaluators, sides=1)
-    print(f"Variant:    {args.variant}")
+    print(f"Variant:    {args.variant} on {args.model or model_id()} -> fixtures/{args.name or args.variant}.json")
     print(f"Golden set: {golden.label} {summarise(conversations)}")
     print(f"Projected: ~{calls} judge calls, ~${projected:.2f} "
           f"(ceiling ${args.max_usd:.2f})")
@@ -420,17 +438,32 @@ def cmd_run(args: argparse.Namespace) -> int:
     print()
     try:
         result = run_variant(
-            variant=args.variant, golden=golden,
-            evaluators=evaluators, region=args.region, guard=guard,
+            variant=args.variant, golden=golden, evaluators=evaluators,
+            region=args.region, guard=guard, model=args.model or None, name=args.name or None,
         )
     except BudgetExceeded as exc:
         print(f"\nSTOPPED MID-RUN: {exc}", file=sys.stderr)
         return 3
 
     ok = len([s for s in result.scores if s.ok])
-    print(f"\nSaved fixtures/{args.variant}.json  "
+    print(f"\nSaved fixtures/{result.label}.json  "
           f"({ok} scored results, {len(result.failures)} failures)")
     print(f"Spend this run: ${guard.spent_usd:.2f}")
+    return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    """Compare any two saved runs, e.g. a model change with the prompt held fixed. Free."""
+    golden = _load_golden(args.data, None)
+    before, after = load_run(args.before), load_run(args.after)
+    for warning in golden_set_mismatches(golden, before, after):
+        print(f"WARNING: {warning}", file=sys.stderr)
+    path = emit_report(
+        before=before, after=after, golden=golden, evaluators=cfg.select(args.evaluators),
+        duration_s=0.0, cost_usd=before.cost_usd + after.cost_usd,
+    )
+    if path:
+        print(f"Full report: {path.relative_to(ROOT)}")
     return 0
 
 
@@ -526,7 +559,7 @@ def cmd_stability(args: argparse.Namespace) -> int:
         print("Aborted.")
         return 0
 
-    system_prompt = (PROMPTS / f"{args.variant}.md").read_text(encoding="utf-8")
+    system_prompt = (PROMPTS / f"{run.variant}.md").read_text(encoding="utf-8")
     client = EvaluationClient(args.region, guard)
     repeats: list[list[Score]] = []
     try:
@@ -655,11 +688,20 @@ def build_parser() -> argparse.ArgumentParser:
         "run", help="run and score ONE variant, saving a fixture"
     )
     run.add_argument("--variant", required=True, help="prompt name, e.g. baseline")
+    run.add_argument("--model", default="", help="agent model ID (default: CS_EVAL_MODEL_ID)")
+    run.add_argument("--name", default="", help="fixture name (default: the variant)")
     run.add_argument("--limit", type=int, default=settings.get_int("CS_EVAL_LIMIT"))
     run.add_argument("--max-usd", type=float,
                      default=settings.get_float("CS_EVAL_MAX_USD"))
     run.add_argument("-y", "--yes", action="store_true")
     run.set_defaults(func=cmd_run)
+
+    report = subparsers.add_parser(
+        "report", help="compare two saved runs without any AWS call"
+    )
+    report.add_argument("--before", required=True, help="fixture name, e.g. baseline-sonnet-4-5")
+    report.add_argument("--after", required=True, help="fixture name, e.g. baseline")
+    report.set_defaults(func=cmd_report)
 
     propose = subparsers.add_parser(
         "propose", help="derive prompts/improved.md from baseline findings"
@@ -673,7 +715,7 @@ def build_parser() -> argparse.ArgumentParser:
         "stability", help="re-score saved transcripts N times to measure judge noise"
     )
     stability.add_argument("--variant", default=settings.get("CS_EVAL_BASELINE"),
-                           help="fixture whose transcripts are re-scored")
+                           help="fixture name whose transcripts are re-scored")
     stability.add_argument("--cases", default="",
                            help="comma-separated case IDs (default: first 3)")
     stability.add_argument("--repeats", type=int, default=3)

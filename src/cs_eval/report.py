@@ -185,8 +185,7 @@ def render_terminal(
     cells: list[CaseCell],
     conversations: list[Conversation],
     golden_set_label: str,
-    baseline_name: str,
-    improved_name: str,
+    change: list[str],
     judge_calls: int,
     cost_usd: float,
     duration_s: float,
@@ -211,7 +210,8 @@ def render_terminal(
     out.append(f"Golden set: {golden_set_label}")
     out.append(f"            {len(conversations)} conversations, {turns} turns, "
                f"{'/'.join(languages)}; same set scored before and after")
-    out.append(f"Change:     prompts/{baseline_name}.md -> prompts/{improved_name}.md")
+    for index, item in enumerate(change):
+        out.append(f"{'Change:' if index == 0 else '':<12}{item}")
     out.append(f"Cost:       {judge_calls} judge calls | ~${cost_usd:.2f} | {duration_s:.0f}s")
     out.append("")
 
@@ -367,8 +367,7 @@ def render_markdown(
     cells: list[CaseCell],
     conversations: list[Conversation],
     golden_set_label: str,
-    baseline_name: str,
-    improved_name: str,
+    change: list[str],
     judge_calls: int,
     cost_usd: float,
     duration_s: float,
@@ -390,7 +389,7 @@ def render_markdown(
     out.append("")
     out.append(f"- **Golden set:** `{golden_set_label}` - {len(conversations)} conversations, "
                f"{sum(c.turn_count for c in conversations)} turns, same set scored before and after")
-    out.append(f"- **Change:** `prompts/{baseline_name}.md` -> `prompts/{improved_name}.md`")
+    out.append(f"- **Change:** {'; '.join(f'`{item}`' for item in change)}")
     out.append(f"- **Cost of this run:** {judge_calls} judge calls, ~${cost_usd:.2f}, "
                f"{duration_s:.0f}s")
     out.append("")
