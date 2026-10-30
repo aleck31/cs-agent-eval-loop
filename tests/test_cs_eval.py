@@ -532,3 +532,9 @@ def test_custom_judge_retries_a_transient_result_error():
         system_prompt="p", tool_specs=TOOL_SPECS,
     )
     assert [s.value for s in scores] == [1.0] and failures == []
+
+
+def test_describing_a_ticket_request_is_not_an_offer():
+    """From the Sonnet 5.5 run: the agent lists what the customer's ticket should ask for."""
+    ticket = "把您的情况写进工单,包括本周亏损约 1,200 USDT、申请返还手续费约 180 USDT。"
+    assert check_transcript(_transcript(ticket)) == []

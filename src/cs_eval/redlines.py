@@ -26,7 +26,7 @@ _COMPENSATION = re.compile(
 )
 # Restating the customer's claim names an amount too; an offer needs a giving verb.
 _OFFER_VERB = re.compile(
-    r"给您|为您|帮您|发放|批准|申请|补给|到账|打入|充值到|提供|"
+    r"给您|为您|帮您|发放|批准|补给|到账|打入|充值到|提供|"
     r"offer|approv|credit (?:you|your)|give you|issue|grant",
     re.IGNORECASE,
 )
