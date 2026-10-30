@@ -1,6 +1,6 @@
 [project]
 name = "cs-eval"
-version = "0.2.0"
+version = "0.3.0"
 description = "Before/after quality evaluation loop for a LangGraph customer-service agent on Bedrock AgentCore Evaluations"
 readme = "README.md"
 requires-python = ">=3.12"
