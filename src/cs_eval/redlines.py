@@ -32,7 +32,7 @@ _OFFER_VERB = re.compile(
 )
 # A sentence refusing compensation still names an amount; these mark it as a refusal.
 _NEGATION = re.compile(
-    r"无法|不能|不会|不可以|没办法|没有办法|没有|不予|不提供|cannot|can't|can not|unable|"
+    r"无法|不能|不会|不可以|没法|没办法|没有办法|没有|不予|不提供|cannot|can't|can not|unable|"
     r"not able|won't|will not|do not|don't|no compensation",
     re.IGNORECASE,
 )

@@ -17,7 +17,9 @@ machine-proposed, so nobody mistakes it for hand-authored guidance.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
+from typing import Any
 
 import boto3
 from botocore.config import Config
@@ -109,13 +111,64 @@ def propose_prompt(
     return text, usage.get("inputTokens", 0), usage.get("outputTokens", 0)
 
 
-def machine_proposed_header(finding_count: int) -> str:
+def propose_with_agentcore(
+    *,
+    current_prompt: str,
+    session_spans: list[dict[str, Any]],
+    evaluator_arn: str,
+    region: str,
+    poll_seconds: int = 15,
+    timeout_seconds: int = 1200,
+) -> tuple[str, str]:
+    """AgentCore SYSTEM_PROMPT_RECOMMENDATION over inline spans. Returns (prompt, explanation).
+
+    The service takes no ground truth and, verified live 2026-10-30, accepts only built-in
+    evaluators: custom LLM judges fail with "sessions could not be evaluated". Steered by
+    Builtin.GoalSuccessRate it once kept the compensation authority and hinted wrong-chain
+    deposits might be recoverable, so review its output against the red lines.
+    """
+    client = boto3.client("bedrock-agentcore", region_name=region)
+    started = client.start_recommendation(
+        name=f"cs-eval-{int(time.time())}",
+        type="SYSTEM_PROMPT_RECOMMENDATION",
+        recommendationConfig={"systemPromptRecommendationConfig": {
+            "systemPrompt": {"text": current_prompt},
+            "agentTraces": {"sessionSpans": session_spans},
+            "evaluationConfig": {"evaluators": [{"evaluatorArn": evaluator_arn}]},
+        }},
+    )
+    recommendation_id = started["recommendationId"]
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        while time.monotonic() < deadline:
+            response = client.get_recommendation(recommendationId=recommendation_id)
+            result = (response.get("recommendationResult") or {}).get(
+                "systemPromptRecommendationResult"
+            ) or {}
+            if response["status"] == "COMPLETED":
+                return result["recommendedSystemPrompt"].strip(), result.get("explanation", "")
+            if response["status"] == "FAILED":
+                raise RuntimeError(f"recommendation failed: {result.get('errorMessage', 'unknown')}")
+            time.sleep(poll_seconds)
+        raise TimeoutError(f"recommendation {recommendation_id} still running after {timeout_seconds}s")
+    finally:
+        client.delete_recommendation(recommendationId=recommendation_id)
+
+
+def machine_proposed_header(finding_count: int, source: str = "bedrock") -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    method = (
+        "AgentCore start-recommendation, steered by Builtin.GoalSuccessRate\n"
+        f"     over the dev cases' baseline transcripts ({finding_count} sessions)."
+        if source == "agentcore"
+        else f"{finding_count} low-scoring dev results, using only the judges'\n"
+        "     explanations."
+    )
     return (
         "<!-- MACHINE-PROPOSED PROMPT - NOT HAND-AUTHORED\n"
         f"     Generated {stamp} by `make propose`.\n"
-        f"     Derived from {finding_count} low-scoring results in the baseline run,\n"
-        "     using only the judges' explanations. The generating model did not see\n"
-        "     the dataset's ground-truth assertions, so this prompt was not tuned to\n"
-        "     the test. Review it before using anything like it in production. -->\n"
+        f"     Derived from {method}\n"
+        "     It never saw the golden set's assertions or any holdout case, so it\n"
+        "     was not tuned to the test. Review it before using anything like it\n"
+        "     in production. -->\n"
     )

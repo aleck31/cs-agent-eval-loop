@@ -16,6 +16,7 @@ import argparse
 import difflib
 import json
 import sys
+import textwrap
 import time
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
@@ -44,7 +45,13 @@ from cs_eval.diagnose import by_layer, diagnose
 from cs_eval.redlines import check_all
 from cs_eval.stability import render as render_stability
 from cs_eval.stability import spreads
-from cs_eval.improve import collect_findings, machine_proposed_header, propose_prompt
+from cs_eval.improve import (
+    collect_findings,
+    machine_proposed_header,
+    propose_prompt,
+    propose_with_agentcore,
+)
+from cs_eval.spans import build_session_spans
 from cs_eval.report import (
     build_case_matrix,
     build_rows,
@@ -428,10 +435,12 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_propose(args: argparse.Namespace) -> int:
-    """Derive prompts/improved.md from the baseline run's judge explanations."""
+    """Derive prompts/improved.md from the baseline run, learning from dev cases only."""
     evaluators = cfg.select(args.evaluators)
     baseline = load_run(args.baseline)
     dev_ids = _load_golden(args.data, None).ids(DEV)
+    if args.source == "agentcore":
+        return _propose_with_agentcore(args, baseline, dev_ids)
     findings = collect_findings(
         [s for s in baseline.scores if s.conversation_id in dev_ids], evaluators
     )
@@ -453,6 +462,38 @@ def cmd_propose(args: argparse.Namespace) -> int:
         machine_proposed_header(len(findings)) + "\n" + text + "\n", encoding="utf-8"
     )
     print(f"Wrote {target.relative_to(ROOT)}  (~${cost:.3f})")
+    return 0
+
+
+def _propose_with_agentcore(args: argparse.Namespace, baseline: RunResult, dev_ids: set[str]) -> int:
+    current = (PROMPTS / f"{args.baseline}.md").read_text(encoding="utf-8")
+    dev = [t for t in baseline.transcripts if t["conversation_id"] in dev_ids]
+    spans: list[dict] = []
+    for transcript in dev:
+        session_spans, _ = build_session_spans(
+            session_id=f"{transcript['conversation_id']}-propose",
+            turns=transcript["turns"], system_prompt=current, tool_specs=TOOL_SPECS,
+        )
+        spans.extend(session_spans)
+    # The only steering evaluator start-recommendation accepts is a built-in one.
+    goal = next(e for e in cfg.CORE if e.evaluator_id == "Builtin.GoalSuccessRate")
+    print(f"Recommending from {len(dev)} dev transcripts via AgentCore, steered by "
+          f"{goal.short_name}. Takes a few minutes.")
+    print("WARNING: it sees no ground truth, so it optimises what the customer asked for. "
+          "Re-run both variants and read the red-line rows before trusting the result.")
+    text, explanation = propose_with_agentcore(
+        current_prompt=current, session_spans=spans,
+        evaluator_arn=EvaluationClient(args.region).evaluator_arn(goal), region=args.region,
+    )
+    target = PROMPTS / f"{args.improved}.md"
+    target.write_text(
+        machine_proposed_header(len(dev), source="agentcore") + "\n" + text + "\n", encoding="utf-8"
+    )
+    print(f"Wrote {target.relative_to(ROOT)}")
+    if explanation:
+        print("\nWhy, in the optimiser's words:")
+        for chunk in textwrap.wrap(" ".join(explanation.split()), 76)[:12]:
+            print(f"  {chunk}")
     return 0
 
 
@@ -623,6 +664,9 @@ def build_parser() -> argparse.ArgumentParser:
     propose = subparsers.add_parser(
         "propose", help="derive prompts/improved.md from baseline findings"
     )
+    propose.add_argument("--source", choices=["bedrock", "agentcore"], default="bedrock",
+                         help="bedrock: one model call over judge explanations; "
+                              "agentcore: start-recommendation steered by GoalSuccessRate")
     propose.set_defaults(func=cmd_propose)
 
     stability = subparsers.add_parser(

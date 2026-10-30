@@ -179,6 +179,12 @@ class EvaluationClient:
             )
         return resolved
 
+    def evaluator_arn(self, evaluator: Evaluator) -> str:
+        """ARN form, which start-recommendation requires where Evaluate takes an ID."""
+        if not evaluator.is_custom:
+            return f"arn:aws:bedrock-agentcore:::evaluator/{evaluator.evaluator_id}"
+        return self._control.get_evaluator(evaluatorId=self.resolve(evaluator))["evaluatorArn"]
+
     def ensure_custom(self, evaluator: Evaluator, config: dict[str, Any]) -> tuple[str, str]:
         """Create the evaluator, or update it in place so the code stays the source of truth."""
         existing = self.custom_evaluator_id(evaluator)
