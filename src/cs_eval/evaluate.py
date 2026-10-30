@@ -35,6 +35,10 @@ class BudgetExceeded(RuntimeError):
     """Raised when a run would cross, or has crossed, the spend ceiling."""
 
 
+class MissingEvaluator(RuntimeError):
+    """A repo-defined evaluator has not been created in this account and region."""
+
+
 @dataclass
 class Score:
     """One evaluation result, normalised."""
@@ -120,6 +124,7 @@ class EvaluationClient:
         config = Config(retries={"max_attempts": 3, "mode": "standard"}, read_timeout=120)
         self._data = boto3.client("bedrock-agentcore", region_name=region, config=config)
         self._control = boto3.client("bedrock-agentcore-control", region_name=region)
+        self._custom_ids: dict[str, str] | None = None
 
     # -- startup validation --------------------------------------------------
     def list_evaluators(self) -> list[dict[str, Any]] | None:
@@ -150,6 +155,48 @@ class EvaluationClient:
                     return found
         except ClientError:
             return None
+
+    def custom_evaluator_id(self, evaluator: Evaluator) -> str | None:
+        """Account-specific ID (`<name>-<10 chars>`) of a repo-defined evaluator, if created."""
+        if self._custom_ids is None:
+            found = self.list_evaluators() or []
+            self._custom_ids = {}
+            for e in found:
+                eid = e.get("evaluatorId", "")
+                name, _, suffix = eid.rpartition("-")
+                if name and len(suffix) == 10:
+                    self._custom_ids[name] = eid
+        return self._custom_ids.get(evaluator.short_name)
+
+    def resolve(self, evaluator: Evaluator) -> str:
+        """The ID to send to Evaluate; Evaluate takes IDs, not ARNs (verified live)."""
+        if not evaluator.is_custom:
+            return evaluator.evaluator_id
+        resolved = self.custom_evaluator_id(evaluator)
+        if resolved is None:
+            raise MissingEvaluator(
+                f"{evaluator.short_name} is not created in this account/region; run `cs-eval setup`"
+            )
+        return resolved
+
+    def ensure_custom(self, evaluator: Evaluator, config: dict[str, Any]) -> tuple[str, str]:
+        """Create the evaluator, or update it in place so the code stays the source of truth."""
+        existing = self.custom_evaluator_id(evaluator)
+        if existing:
+            self._control.update_evaluator(
+                evaluatorId=existing, evaluatorConfig=config, description=evaluator.blurb
+            )
+            return existing, "updated"
+        response = self._control.create_evaluator(
+            evaluatorName=evaluator.short_name,
+            level=evaluator.level,
+            evaluatorConfig=config,
+            description=evaluator.blurb,
+        )
+        created = response["evaluatorId"]
+        if self._custom_ids is not None:
+            self._custom_ids[evaluator.short_name] = created
+        return created, "created"
 
     def available_evaluator_ids(self) -> set[str] | None:
         evaluators = self.list_evaluators()
@@ -201,17 +248,20 @@ class EvaluationClient:
         input_tokens = output_tokens = 0
 
         for evaluator in evaluators:
-            request: dict[str, Any] = {
-                "evaluatorId": evaluator.evaluator_id,
-                "evaluationInput": {"sessionSpans": spans},
-            }
-            if reference_inputs:
-                request["evaluationReferenceInputs"] = reference_inputs
-
             try:
+                request: dict[str, Any] = {
+                    "evaluatorId": self.resolve(evaluator),
+                    "evaluationInput": {"sessionSpans": spans},
+                }
+                if reference_inputs:
+                    request["evaluationReferenceInputs"] = reference_inputs
                 response = self._evaluate_with_retry(request)
-            except ClientError as exc:
-                message = f"{conversation.id}/{evaluator.short_name}: {exc.response.get('Error', {}).get('Code', 'Error')}"
+            except (ClientError, MissingEvaluator) as exc:
+                code = (
+                    exc.response.get("Error", {}).get("Code", "Error")
+                    if isinstance(exc, ClientError) else "MissingEvaluator"
+                )
+                message = f"{conversation.id}/{evaluator.short_name}: {code}"
                 failures.append(message)
                 scores.append(
                     Score(

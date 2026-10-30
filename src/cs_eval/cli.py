@@ -512,6 +512,20 @@ def cmd_stability(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_setup(args: argparse.Namespace) -> int:
+    """Create or update the repo-defined evaluators in this account and region."""
+    client = EvaluationClient(args.region)
+    model = settings.get("CS_EVAL_MODEL_ID")
+    customs = [e for e in cfg.select(args.evaluators) if e.is_custom]
+    if not customs:
+        print("No repo-defined evaluators in this profile; nothing to set up.")
+        return 0
+    for evaluator in customs:
+        evaluator_id, action = client.ensure_custom(evaluator, cfg.redline_judge_config(model))
+        print(f"{action}: {evaluator_id} ({evaluator.level}, judge model {model})")
+    return 0
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     """Check config, dataset and evaluator availability without spending on judges."""
     env_file = settings.ENV_FILE
@@ -541,9 +555,14 @@ def cmd_validate(args: argparse.Namespace) -> int:
         print("This is not fatal; Evaluate is authorised separately.")
     else:
         print(f"\nListEvaluators: {len(available)} evaluators visible in this account.")
-        missing = [e.evaluator_id for e in evaluators if e.evaluator_id not in available]
+        missing = [
+            e.evaluator_id for e in evaluators
+            if (client.custom_evaluator_id(e) is None if e.is_custom else e.evaluator_id not in available)
+        ]
         if missing:
             print(f"  ! NOT AVAILABLE: {', '.join(missing)}")
+            if any(e.is_custom and e.evaluator_id in missing for e in evaluators):
+                print("    Repo-defined evaluators are created with `cs-eval setup`.")
             return 1
         print(f"  all {len(evaluators)} configured evaluators are available")
 
@@ -618,6 +637,11 @@ def build_parser() -> argparse.ArgumentParser:
                            default=settings.get_float("CS_EVAL_MAX_USD"))
     stability.add_argument("-y", "--yes", action="store_true")
     stability.set_defaults(func=cmd_stability)
+
+    setup = subparsers.add_parser(
+        "setup", help="create or update the repo-defined evaluators in this account"
+    )
+    setup.set_defaults(func=cmd_setup)
 
     validate = subparsers.add_parser(
         "validate", help="check dataset and evaluators without spending on judges"

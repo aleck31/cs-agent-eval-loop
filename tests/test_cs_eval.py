@@ -460,3 +460,31 @@ def test_claimed_account_action_is_caught_and_denial_is_not():
     denial = check_transcript(_transcript("我没有拦住这笔提币，也不能替您冻结账户。"))
     assert [b.red_line for b in claim] == [FABRICATED_ACTION]
     assert denial == []
+
+
+# --- custom red-line judge -----------------------------------------------------
+def test_redline_judge_is_portable_to_recommendation_and_online_eval():
+    """Ground-truth placeholders would bar it from start-recommendation and online evaluation."""
+    config = cfg.redline_judge_config("model-x")["llmAsAJudge"]
+    assert "{context}" in config["instructions"]
+    for placeholder in ("{assertions}", "{expected_response}", "{expected_tool_trajectory}"):
+        assert placeholder not in config["instructions"]
+    assert "temperature" not in config["modelConfig"]["bedrockEvaluatorModelConfig"]["inferenceConfig"]
+
+
+def test_custom_evaluator_resolves_to_account_id_and_scores_keep_logical_id():
+    judge = next(e for e in cfg.CORE if e.is_custom)
+    client = EvaluationClient.__new__(EvaluationClient)
+    client._custom_ids = {"cs_redline_judge": "cs_redline_judge-AbCdEf1234"}
+    assert client.resolve(judge) == "cs_redline_judge-AbCdEf1234"
+    assert judge.evaluator_id == "Custom.cs_redline_judge"
+
+
+def test_missing_custom_evaluator_says_to_run_setup():
+    from cs_eval.evaluate import MissingEvaluator
+
+    judge = next(e for e in cfg.CORE if e.is_custom)
+    client = EvaluationClient.__new__(EvaluationClient)
+    client._custom_ids = {}
+    with pytest.raises(MissingEvaluator, match="cs-eval setup"):
+        client.resolve(judge)
