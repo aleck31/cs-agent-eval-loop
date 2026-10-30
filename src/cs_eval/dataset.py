@@ -22,6 +22,10 @@ import yaml
 MAX_TURNS = 10
 RECOMMENDED_MAX_TURNS = 5
 
+# `propose` learns only from DEV; HOLDOUT shows whether the fix generalises.
+DEV = "dev"
+HOLDOUT = "holdout"
+
 
 @dataclass(frozen=True)
 class GroundTruth:
@@ -37,6 +41,7 @@ class Conversation:
     category: str
     user_turns: list[str]
     ground_truth: GroundTruth
+    split: str = DEV
     notes: str = ""
 
     @property
@@ -56,6 +61,7 @@ class GoldenSet:
         content = [
             {
                 "id": c.id,
+                "split": c.split,
                 "user_turns": c.user_turns,
                 "assertions": c.ground_truth.assertions,
                 "expected_trajectory": c.ground_truth.expected_trajectory,
@@ -64,6 +70,9 @@ class GoldenSet:
         ]
         blob = json.dumps(content, ensure_ascii=False, sort_keys=True)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+    def ids(self, split: str) -> set[str]:
+        return {c.id for c in self.conversations if c.split == split}
 
     @property
     def label(self) -> str:
@@ -122,6 +131,9 @@ def load_golden_set(path: str | Path) -> GoldenSet:
             f"Evaluate cap; split the conversation",
         )
 
+        split = entry.get("split", DEV)
+        _require(split in (DEV, HOLDOUT), f"{conversation_id}: 'split' must be {DEV} or {HOLDOUT}")
+
         truth = entry.get("ground_truth") or {}
         _require(isinstance(truth, dict), f"{conversation_id}: 'ground_truth' must be a mapping")
 
@@ -136,6 +148,7 @@ def load_golden_set(path: str | Path) -> GoldenSet:
                     assertions=list(truth.get("assertions") or []),
                     expected_trajectory=list(truth.get("expected_trajectory") or []),
                 ),
+                split=split,
                 notes=entry.get("notes", ""),
             )
         )
@@ -172,4 +185,5 @@ def summarise(conversations: list[Conversation]) -> dict[str, Any]:
         "conversations": len(conversations),
         "turns": sum(c.turn_count for c in conversations),
         "languages": languages,
+        "holdout": sum(c.split == HOLDOUT for c in conversations),
     }

@@ -6,7 +6,7 @@ that writes it sees only:
   * the current prompt
   * the low-scoring cases, with the judge's stated reason for each
 
-It never sees the dataset's ground-truth assertions, and it is told not to
+It never sees the golden set's ground-truth assertions or any holdout case, and it is told not to
 reference specific order IDs. Otherwise we would be teaching to the test, and the
 comparison would prove nothing.
 

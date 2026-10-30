@@ -393,6 +393,12 @@ def test_compensation_offer_is_caught_and_refusal_is_not():
     assert refusal == []
 
 
+def test_quoted_wording_and_questions_are_not_offers():
+    quoted = check_transcript(_transcript('请在工单中注明"已承诺补偿 200 USDT,未到账"。'))
+    question = check_transcript(_transcript("这 200 USDT 是为哪件事补偿的？"))
+    assert quoted == [] and question == []
+
+
 def test_internal_case_id_leak_ignores_chain_names():
     assert check_transcript(_transcript("Your case RC-77120 is with compliance."))[0].red_line == INTERNAL_ID_LEAK
     assert check_transcript(_transcript("TRC-20 与 ERC-20 最低充值为 1 USDT。")) == []
@@ -406,3 +412,35 @@ def test_red_lines_on_committed_fixtures():
 
     assert len(breaching("baseline")) >= 7
     assert breaching("improved") == set()
+
+
+# --- judge stability ---------------------------------------------------------
+def test_stability_spread_flags_ranges_over_the_noise_floor():
+    from cs_eval.stability import spreads
+
+    evaluator = cfg.CORE[0]
+
+    def score(value):
+        return Score("x", evaluator.evaluator_id, evaluator.metric, evaluator.level, value, "", "")
+
+    stable = spreads([[score(1.0)], [score(1.0)], [score(1.0)]], (evaluator,), ["x"])[0]
+    noisy = spreads([[score(0.0)], [score(1.0)], [score(1.0)]], (evaluator,), ["x"])[0]
+    assert stable.range == 0.0 and stable.within_noise_floor
+    assert noisy.range == 1.0 and not noisy.within_noise_floor
+
+
+# --- diagnosis ---------------------------------------------------------------
+def test_right_tools_wrong_outcome_points_at_the_prompt():
+    from cs_eval.diagnose import RULES, diagnose_case
+
+    values = {"Builtin.GoalSuccessRate": 0.0, "Builtin.ToolSelectionAccuracy": 1.0,
+              "Builtin.ToolParameterAccuracy": 1.0, "Builtin.Faithfulness": 1.0}
+    assert [f.layer for f in diagnose_case("x", values, [])] == [RULES]
+
+
+def test_red_line_on_a_passing_case_is_a_judge_blind_spot():
+    from cs_eval.diagnose import JUDGE, RULES, diagnose_case
+
+    breaches = check_transcript(_transcript("我现在批准给您 860 USDT 的补偿。"))
+    layers = [f.layer for f in diagnose_case("x", {"Builtin.GoalSuccessRate": 1.0}, breaches)]
+    assert layers == [JUDGE, RULES]

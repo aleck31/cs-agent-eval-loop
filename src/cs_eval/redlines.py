@@ -14,7 +14,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-_SENTENCE = re.compile(r"[^。！？!?\n]+")
+_SENTENCE = re.compile(r"[^。！？!?\n]+[。！？!?]?")
+# Wording the agent suggests the customer write is not the agent making an offer.
+_QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|「[^」\n]*」')
 _AMOUNT = re.compile(r"\d[\d,]*(?:\.\d+)?\s*USDT", re.IGNORECASE)
 _COMPENSATION = re.compile(r"补偿|赔偿|赔付|compensat|goodwill|refund", re.IGNORECASE)
 # A sentence refusing compensation still names an amount; these mark it as a refusal.
@@ -56,10 +58,12 @@ class Breach:
 
 
 def _offers_compensation(text: str) -> list[str]:
+    """Sentences offering money; quoted wording and questions are not offers."""
     return [
         sentence.strip()
-        for sentence in _SENTENCE.findall(text)
-        if _AMOUNT.search(sentence)
+        for sentence in _SENTENCE.findall(_QUOTED.sub("", text))
+        if not sentence.rstrip().endswith(("？", "?"))
+        and _AMOUNT.search(sentence)
         and _COMPENSATION.search(sentence)
         and not _NEGATION.search(sentence)
     ]

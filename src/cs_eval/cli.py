@@ -20,12 +20,18 @@ import time
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from cs_eval import config as cfg
 from cs_eval import settings
 from cs_eval.agent import build_agent, run_conversation
-from cs_eval.dataset import GoldenSet, dataset_warnings, load_golden_set, summarise
+from cs_eval.dataset import (
+    DEV,
+    HOLDOUT,
+    GoldenSet,
+    dataset_warnings,
+    load_golden_set,
+    summarise,
+)
 from cs_eval.evaluate import (
     BudgetExceeded,
     BudgetGuard,
@@ -34,7 +40,10 @@ from cs_eval.evaluate import (
     Score,
     project_cost,
 )
+from cs_eval.diagnose import by_layer, diagnose
 from cs_eval.redlines import check_all
+from cs_eval.stability import render as render_stability
+from cs_eval.stability import spreads
 from cs_eval.improve import collect_findings, machine_proposed_header, propose_prompt
 from cs_eval.report import (
     build_case_matrix,
@@ -250,13 +259,23 @@ def emit_report(
 ) -> Path | None:
     conversations = golden.conversations
     rows = build_rows(before.scores, after.scores, evaluators)
+    holdout = golden.ids(HOLDOUT)
+    holdout_rows = build_rows(
+        [s for s in before.scores if s.conversation_id in holdout],
+        [s for s in after.scores if s.conversation_id in holdout],
+        evaluators,
+    )
     cells = build_case_matrix(before.scores, after.scores, evaluators, conversations)
     diff = prompt_diff(before.variant, after.variant)
     failures = before.failures + after.failures
     judge_calls = before.judge_calls + after.judge_calls
 
+    before_breaches = check_all(before.transcripts)
+    after_breaches = check_all(after.transcripts)
     shared = {
         "rows": rows,
+        "holdout_rows": holdout_rows,
+        "holdout_count": len(holdout),
         "cells": cells,
         "conversations": conversations,
         "golden_set_label": golden.label,
@@ -267,8 +286,10 @@ def emit_report(
         "duration_s": duration_s,
         "prompt_diff": diff,
         "failures": failures,
-        "before_breaches": check_all(before.transcripts),
-        "after_breaches": check_all(after.transcripts),
+        "before_breaches": before_breaches,
+        "after_breaches": after_breaches,
+        "where_before": by_layer(diagnose(before.scores, evaluators, conversations, before_breaches)),
+        "where_after": by_layer(diagnose(after.scores, evaluators, conversations, after_breaches)),
     }
 
     print()
@@ -410,13 +431,16 @@ def cmd_propose(args: argparse.Namespace) -> int:
     """Derive prompts/improved.md from the baseline run's judge explanations."""
     evaluators = cfg.select(args.evaluators)
     baseline = load_run(args.baseline)
-    findings = collect_findings(baseline.scores, evaluators)
+    dev_ids = _load_golden(args.data, None).ids(DEV)
+    findings = collect_findings(
+        [s for s in baseline.scores if s.conversation_id in dev_ids], evaluators
+    )
     if not findings:
         print("Baseline scored clean; nothing to improve.", file=sys.stderr)
         return 1
 
-    print(f"Learning from {len(findings)} low-scoring results "
-          f"(judge explanations only, no ground truth).")
+    print(f"Learning from {len(findings)} low-scoring dev results "
+          f"(judge explanations only, no ground truth, no holdout cases).")
     current = (PROMPTS / f"{args.baseline}.md").read_text(encoding="utf-8")
     text, in_tokens, out_tokens = propose_prompt(
         current_prompt=current, findings=findings, region=args.region
@@ -429,6 +453,62 @@ def cmd_propose(args: argparse.Namespace) -> int:
         machine_proposed_header(len(findings)) + "\n" + text + "\n", encoding="utf-8"
     )
     print(f"Wrote {target.relative_to(ROOT)}  (~${cost:.3f})")
+    return 0
+
+
+def cmd_stability(args: argparse.Namespace) -> int:
+    """Re-score saved transcripts N times to measure judge repeatability."""
+    golden = _load_golden(args.data, None)
+    by_id = {c.id: c for c in golden.conversations}
+    run = load_run(args.variant)
+    transcripts = {t["conversation_id"]: t for t in run.transcripts}
+    case_ids = args.cases.split(",") if args.cases else sorted(transcripts)[:3]
+    unknown = [cid for cid in case_ids if cid not in transcripts or cid not in by_id]
+    if unknown:
+        print(f"No transcript or golden case for: {', '.join(unknown)}", file=sys.stderr)
+        return 2
+    evaluators = cfg.select(args.evaluators)
+    cases = [by_id[cid] for cid in case_ids]
+
+    calls, per_repeat = project_cost(cases, evaluators, sides=1)
+    projected = per_repeat * args.repeats
+    print(f"Stability:  {args.variant} x {args.repeats} repeats on {', '.join(case_ids)}")
+    print(f"Projected:  ~{calls * args.repeats} judge calls, ~${projected:.2f} "
+          f"(ceiling ${args.max_usd:.2f})")
+    guard = BudgetGuard(args.max_usd)
+    try:
+        guard.check_before(projected)
+    except BudgetExceeded as exc:
+        print(f"\nSTOPPING: {exc}", file=sys.stderr)
+        return 3
+    if not args.yes and input("Proceed and spend? [y/N] ").strip().lower() != "y":
+        print("Aborted.")
+        return 0
+
+    system_prompt = (PROMPTS / f"{args.variant}.md").read_text(encoding="utf-8")
+    client = EvaluationClient(args.region, guard)
+    repeats: list[list[Score]] = []
+    try:
+        for index in range(args.repeats):
+            scores: list[Score] = []
+            for case in cases:
+                result, _, _, _ = client.score_conversation(
+                    conversation=case,
+                    transcript_turns=transcripts[case.id]["turns"],
+                    evaluators=evaluators,
+                    system_prompt=system_prompt,
+                    tool_specs=TOOL_SPECS,
+                )
+                scores.extend(result)
+            repeats.append(scores)
+            print(f"  repeat {index + 1}/{args.repeats} done (spend ${guard.spent_usd:.2f})")
+    except BudgetExceeded as exc:
+        print(f"\nSTOPPED MID-RUN: {exc}", file=sys.stderr)
+        return 3
+
+    print()
+    print(render_stability(spreads(repeats, evaluators, case_ids), args.repeats))
+    print(f"\nSpend this run: ${guard.spent_usd:.2f}")
     return 0
 
 
@@ -525,6 +605,19 @@ def build_parser() -> argparse.ArgumentParser:
         "propose", help="derive prompts/improved.md from baseline findings"
     )
     propose.set_defaults(func=cmd_propose)
+
+    stability = subparsers.add_parser(
+        "stability", help="re-score saved transcripts N times to measure judge noise"
+    )
+    stability.add_argument("--variant", default=settings.get("CS_EVAL_BASELINE"),
+                           help="fixture whose transcripts are re-scored")
+    stability.add_argument("--cases", default="",
+                           help="comma-separated case IDs (default: first 3)")
+    stability.add_argument("--repeats", type=int, default=3)
+    stability.add_argument("--max-usd", type=float,
+                           default=settings.get_float("CS_EVAL_MAX_USD"))
+    stability.add_argument("-y", "--yes", action="store_true")
+    stability.set_defaults(func=cmd_stability)
 
     validate = subparsers.add_parser(
         "validate", help="check dataset and evaluators without spending on judges"

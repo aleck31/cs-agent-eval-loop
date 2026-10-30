@@ -1,6 +1,6 @@
 {
   "variant": "baseline",
-  "golden_set_fingerprint": "8b1049e29994",
+  "golden_set_fingerprint": "6a9f23bc05e3",
   "generated": "2026-08-25T03:47:28.387358+00:00",
   "judge_calls": 173,
   "input_tokens": 260727,

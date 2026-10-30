@@ -180,6 +180,8 @@ def _verdict_mark(row: MetricRow) -> str:
 def render_terminal(
     *,
     rows: list[MetricRow],
+    holdout_rows: list[MetricRow],
+    holdout_count: int,
     cells: list[CaseCell],
     conversations: list[Conversation],
     golden_set_label: str,
@@ -192,6 +194,8 @@ def render_terminal(
     failures: list[str],
     before_breaches: list[Breach],
     after_breaches: list[Breach],
+    where_before: dict[str, list[str]],
+    where_after: dict[str, list[str]],
     width: int = 78,
 ) -> str:
     """The screenshot. Business metrics first, weak cases second, cause last."""
@@ -224,6 +228,16 @@ def render_terminal(
     out.append("  shown as ~ because LLM judges are not deterministic.")
     out.append("")
 
+    if holdout_count:
+        out.append(f"HOLDOUT ONLY ({holdout_count} cases propose never learned from)")
+        for row in holdout_rows:
+            out.append(
+                f"  {row.metric:<32}{_pct(row.before):>8}{_pct(row.after):>8}"
+                f"{_delta_cell(row):>9}  {_verdict_mark(row)}"
+            )
+        out.append("  The fix generalises only if these move like the full set.")
+        out.append("")
+
     # --- red lines ----------------------------------------------------------
     out.append(f"{'RED LINES (regex, no judge)':<34}{'BEFORE':>8}{'AFTER':>8}")
     for red_line, before_ids, after_ids in red_line_rows(before_breaches, after_breaches):
@@ -231,6 +245,17 @@ def render_terminal(
         out.append(f"{red_line.label:<34}{len(before_ids):>8}{len(after_ids):>8}{'':>9}  {mark}")
     out.append("  Cases breaching; lower is better. Deterministic, so any change is real.")
     out.append("")
+
+    # --- where to fix -------------------------------------------------------
+    layers = list(dict.fromkeys([*where_before, *where_after]))
+    if layers:
+        out.append(f"{'WHERE TO FIX (hypotheses)':<26}{'BEFORE':>8}{'AFTER':>8}  Cases after")
+        for layer in layers:
+            after_ids = where_after.get(layer, [])
+            out.append(f"{layer:<26}{len(where_before.get(layer, [])):>8}{len(after_ids):>8}"
+                       f"  {', '.join(after_ids)[:34] or '-'}")
+        out.append("  From the metric pattern per case; test each with the next run.")
+        out.append("")
 
     # --- weak cases --------------------------------------------------------
     weak = [
@@ -337,6 +362,8 @@ def _wrap(text: str, width: int, limit: int = 6) -> list[str]:
 def render_markdown(
     *,
     rows: list[MetricRow],
+    holdout_rows: list[MetricRow],
+    holdout_count: int,
     cells: list[CaseCell],
     conversations: list[Conversation],
     golden_set_label: str,
@@ -349,6 +376,8 @@ def render_markdown(
     failures: list[str],
     before_breaches: list[Breach],
     after_breaches: list[Breach],
+    where_before: dict[str, list[str]],
+    where_after: dict[str, list[str]],
     evaluators: tuple[Evaluator, ...],
 ) -> str:
     """Same story as the terminal view, plus the full matrix for whoever digs in."""
@@ -381,6 +410,21 @@ def render_markdown(
                "moves are noise, not progress.")
     out.append("")
 
+    if holdout_count:
+        out.append(f"### Holdout only ({holdout_count} cases)")
+        out.append("")
+        out.append("`propose` never learned from these cases; the fix generalises only if they move "
+                   "like the full set.")
+        out.append("")
+        out.append("| Metric | Before | After | Change | |")
+        out.append("|---|---|---|---|---|")
+        for row in holdout_rows:
+            out.append(
+                f"| {row.metric} | {_pct(row.before).strip()} | {_pct(row.after).strip()} "
+                f"| {_delta_cell(row).strip()} | {_verdict_mark(row)} |"
+            )
+        out.append("")
+
     out.append("## Red lines")
     out.append("")
     out.append("Deterministic regex checks over the replies; no judge, so any change is real. "
@@ -396,6 +440,20 @@ def render_markdown(
         out.append(f"- after, {breach.conversation_id} turn {breach.turn}, {breach.red_line.label}: "
                    f"`{breach.evidence}`")
     if after_breaches:
+        out.append("")
+
+    layers = list(dict.fromkeys([*where_before, *where_after]))
+    if layers:
+        out.append("## Where to fix")
+        out.append("")
+        out.append("Hypotheses from each case's metric pattern: right system and record but a wrong "
+                   "outcome points at the rules in the prompt, not retrieval or tools.")
+        out.append("")
+        out.append("| Layer | Cases before | Cases after |")
+        out.append("|---|---|---|")
+        for layer in layers:
+            out.append(f"| {layer} | {', '.join(where_before.get(layer, [])) or '-'} "
+                       f"| {', '.join(where_after.get(layer, [])) or '-'} |")
         out.append("")
 
     out.append("### What each metric means")
