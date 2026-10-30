@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from typing import Any
 
 _SENTENCE = re.compile(r"[^。！？!?\n]+[。！？!?]?")
+# Reported speech: restating a customer's claim, a remark, or a ticket draft is not an offer.
+_REPORTED = re.compile(r"诉求|声称|您说|你说|您提到|提到的|备注|写着|据称|说是|说客服|claims?|says?|said", re.IGNORECASE)
 # Wording the agent suggests the customer write is not the agent making an offer.
 _QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|「[^」\n]*」')
 _AMOUNT = re.compile(r"\d[\d,]*(?:\.\d+)?\s*USDT", re.IGNORECASE)
@@ -44,7 +46,8 @@ _ACTION_CLAIM = re.compile(
     r"I(?:'ve| have) noted (?:it|this|that) on your account",
     re.IGNORECASE,
 )
-_ACTION_NEGATION = re.compile(r"没有|未|并未|不是|not |n't", re.IGNORECASE)
+# A conditional ("if it is still cancelled, resubmit") describes a state, not the agent's act.
+_ACTION_NEGATION = re.compile(r"没有|未|并未|不是|如果|若是|假如|not |n't|\bif\b", re.IGNORECASE)
 # Internal risk-review case IDs (tools.py `risk_review.case_id`); the lookbehind keeps "TRC-20" out.
 _INTERNAL_CASE_ID = re.compile(r"(?<![A-Za-z])RC-\d{4,}")
 
@@ -92,6 +95,7 @@ def _offers_compensation(text: str) -> list[str]:
         and _COMPENSATION.search(sentence)
         and _OFFER_VERB.search(sentence)
         and not _NEGATION.search(sentence)
+        and not _REPORTED.search(sentence)
     ]
 
 
