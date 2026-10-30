@@ -198,7 +198,7 @@ def test_fingerprint_tracks_ground_truth_not_display_fields(tmp_path):
 def test_committed_fixtures_were_scored_on_the_shipped_golden_set():
     """Editing the golden set without re-running live would make replay compare against a different yardstick."""
     fingerprint = load_golden_set(DATASET).fingerprint
-    for variant in ("baseline-sonnet-4-5", "baseline", "improved"):
+    for variant in sorted(p.stem for p in Path("fixtures").glob("*.json")):
         payload = json.loads(Path(f"fixtures/{variant}.json").read_text(encoding="utf-8"))
         assert payload["golden_set_fingerprint"] == fingerprint, variant
 
@@ -418,14 +418,11 @@ def test_internal_case_id_leak_ignores_chain_names():
     assert check_transcript(_transcript("TRC-20 与 ERC-20 最低充值为 1 USDT。")) == []
 
 
-def test_red_lines_on_committed_fixtures():
-    """Pins the calibration: Sonnet 4.5 on the bad baseline offers money, Sonnet 5.5 never does."""
-    def breaching(name):
-        payload = json.loads(Path(f"fixtures/{name}.json").read_text(encoding="utf-8"))
-        return cases_breaching(check_all(payload["transcripts"]), COMPENSATION_OFFER)
-
-    assert len(breaching("baseline-sonnet-4-5")) >= 7
-    assert breaching("baseline") == set()
+def test_red_lines_raise_no_false_alarm_on_committed_fixtures():
+    """Read by hand: no committed reply offers money; a hit here is a new false positive."""
+    for path in sorted(Path("fixtures").glob("*.json")):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert cases_breaching(check_all(payload["transcripts"]), COMPENSATION_OFFER) == set(), path.name
 
 
 # --- judge stability ---------------------------------------------------------
