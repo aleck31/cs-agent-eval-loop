@@ -68,6 +68,7 @@ class RunResult:
     input_tokens: int = 0
     output_tokens: int = 0
     failures: list[str] = field(default_factory=list)
+    transcripts: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def cost_usd(self) -> float:

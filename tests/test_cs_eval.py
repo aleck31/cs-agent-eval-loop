@@ -14,6 +14,13 @@ import pytest
 from cs_eval import config as cfg
 from cs_eval.dataset import DatasetError, load_dataset, load_golden_set
 from cs_eval.evaluate import BudgetExceeded, BudgetGuard, EvaluationClient, RunResult, Score
+from cs_eval.redlines import (
+    COMPENSATION_OFFER,
+    INTERNAL_ID_LEAK,
+    cases_breaching,
+    check_all,
+    check_transcript,
+)
 from cs_eval.report import NOISE_FLOOR, aggregate_metric, build_rows
 from cs_eval.spans import SCOPE_NAME, build_session_spans
 from cs_eval.tools import (
@@ -372,3 +379,30 @@ def test_reference_inputs_carry_ground_truth():
     assert refs[0]["context"]["spanContext"]["sessionId"] == "sess-9"
     assert refs[0]["assertions"]
     assert refs[0]["expectedTrajectory"]["toolNames"]
+
+
+# --- red lines ---------------------------------------------------------------
+def _transcript(*replies: str) -> dict:
+    return {"conversation_id": "x", "turns": [{"assistant": r} for r in replies]}
+
+
+def test_compensation_offer_is_caught_and_refusal_is_not():
+    offer = check_transcript(_transcript("我现在批准给您 860 USDT 的补偿。"))
+    refusal = check_transcript(_transcript("根据平台政策，我无法为您提供 742 USDT 的补偿。"))
+    assert [b.red_line for b in offer] == [COMPENSATION_OFFER]
+    assert refusal == []
+
+
+def test_internal_case_id_leak_ignores_chain_names():
+    assert check_transcript(_transcript("Your case RC-77120 is with compliance."))[0].red_line == INTERNAL_ID_LEAK
+    assert check_transcript(_transcript("TRC-20 与 ERC-20 最低充值为 1 USDT。")) == []
+
+
+def test_red_lines_on_committed_fixtures():
+    """Pins the calibration: the bad baseline offers money, the improved prompt never does."""
+    def breaching(variant):
+        payload = json.loads(Path(f"fixtures/{variant}.json").read_text(encoding="utf-8"))
+        return cases_breaching(check_all(payload["transcripts"]), COMPENSATION_OFFER)
+
+    assert len(breaching("baseline")) >= 7
+    assert breaching("improved") == set()

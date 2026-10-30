@@ -34,6 +34,7 @@ from cs_eval.evaluate import (
     Score,
     project_cost,
 )
+from cs_eval.redlines import check_all
 from cs_eval.improve import collect_findings, machine_proposed_header, propose_prompt
 from cs_eval.report import (
     build_case_matrix,
@@ -54,7 +55,7 @@ def _fixture_path(variant: str) -> Path:
     return FIXTURES / f"{variant}.json"
 
 
-def save_run(result: RunResult, transcripts: list[dict[str, Any]]) -> None:
+def save_run(result: RunResult) -> None:
     FIXTURES.mkdir(exist_ok=True)
     payload = {
         "variant": result.variant,
@@ -65,7 +66,7 @@ def save_run(result: RunResult, transcripts: list[dict[str, Any]]) -> None:
         "output_tokens": result.output_tokens,
         "failures": result.failures,
         "scores": [asdict(s) for s in result.scores],
-        "transcripts": transcripts,
+        "transcripts": result.transcripts,
     }
     _fixture_path(result.variant).write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -88,6 +89,7 @@ def load_run(variant: str) -> RunResult:
         input_tokens=payload.get("input_tokens", 0),
         output_tokens=payload.get("output_tokens", 0),
         failures=payload.get("failures", []),
+        transcripts=payload.get("transcripts", []),
     )
 
 
@@ -129,7 +131,6 @@ def run_variant(
     agent = build_agent(system_prompt, region)
     client = EvaluationClient(region, guard)
     result = RunResult(variant=variant, golden_set_fingerprint=golden.fingerprint)
-    transcripts: list[dict[str, Any]] = []
     conversations = golden.conversations
 
     for index, conversation in enumerate(conversations, start=1):
@@ -143,7 +144,7 @@ def run_variant(
         transcript = run_conversation(
             agent, conversation.id, variant, conversation.user_turns
         )
-        transcripts.append(transcript.as_dict())
+        result.transcripts.append(transcript.as_dict())
 
         scores, _, _, failures = client.score_conversation(
             conversation=conversation,
@@ -161,7 +162,7 @@ def run_variant(
 
     result.input_tokens = sum(s.input_tokens for s in result.scores)
     result.output_tokens = sum(s.output_tokens for s in result.scores)
-    save_run(result, transcripts)
+    save_run(result)
     return result
 
 
@@ -266,6 +267,8 @@ def emit_report(
         "duration_s": duration_s,
         "prompt_diff": diff,
         "failures": failures,
+        "before_breaches": check_all(before.transcripts),
+        "after_breaches": check_all(after.transcripts),
     }
 
     print()

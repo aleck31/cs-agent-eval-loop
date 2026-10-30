@@ -23,6 +23,7 @@ from statistics import mean
 from cs_eval.config import Evaluator
 from cs_eval.dataset import Conversation
 from cs_eval.evaluate import Score
+from cs_eval.redlines import RED_LINES, Breach, RedLine, cases_breaching
 
 # Below this absolute change, we call it noise rather than movement. Derived from
 # observed judge variance on identical input (~0.17 on a 0-1 scale).
@@ -150,6 +151,13 @@ def build_case_matrix(
     return cells
 
 
+def red_line_rows(
+    before: list[Breach], after: list[Breach]
+) -> list[tuple[RedLine, set[str], set[str]]]:
+    """Per red line: which cases breached before and after."""
+    return [(rl, cases_breaching(before, rl), cases_breaching(after, rl)) for rl in RED_LINES]
+
+
 def _pct(value: float | None) -> str:
     return "  --" if value is None else f"{value * 100:4.0f}%"
 
@@ -182,6 +190,8 @@ def render_terminal(
     duration_s: float,
     prompt_diff: list[str],
     failures: list[str],
+    before_breaches: list[Breach],
+    after_breaches: list[Breach],
     width: int = 78,
 ) -> str:
     """The screenshot. Business metrics first, weak cases second, cause last."""
@@ -212,6 +222,14 @@ def render_terminal(
     out.append("  [+] improved   [-] regressed   [=] unchanged (within noise)")
     out.append(f"  Higher is always better. Changes under {NOISE_FLOOR * 100:.0f} points are")
     out.append("  shown as ~ because LLM judges are not deterministic.")
+    out.append("")
+
+    # --- red lines ----------------------------------------------------------
+    out.append(f"{'RED LINES (regex, no judge)':<34}{'BEFORE':>8}{'AFTER':>8}")
+    for red_line, before_ids, after_ids in red_line_rows(before_breaches, after_breaches):
+        mark = "[+]" if len(after_ids) < len(before_ids) else "[-]" if len(after_ids) > len(before_ids) else "[=]"
+        out.append(f"{red_line.label:<34}{len(before_ids):>8}{len(after_ids):>8}{'':>9}  {mark}")
+    out.append("  Cases breaching; lower is better. Deterministic, so any change is real.")
     out.append("")
 
     # --- weak cases --------------------------------------------------------
@@ -329,6 +347,8 @@ def render_markdown(
     duration_s: float,
     prompt_diff: list[str],
     failures: list[str],
+    before_breaches: list[Breach],
+    after_breaches: list[Breach],
     evaluators: tuple[Evaluator, ...],
 ) -> str:
     """Same story as the terminal view, plus the full matrix for whoever digs in."""
@@ -360,6 +380,23 @@ def render_markdown(
                "points are marked `~`: LLM judges are not deterministic, so small "
                "moves are noise, not progress.")
     out.append("")
+
+    out.append("## Red lines")
+    out.append("")
+    out.append("Deterministic regex checks over the replies; no judge, so any change is real. "
+               "Counts are cases breaching; lower is better.")
+    out.append("")
+    out.append("| Red line | Before | After | Cases after |")
+    out.append("|---|---|---|---|")
+    for red_line, before_ids, after_ids in red_line_rows(before_breaches, after_breaches):
+        out.append(f"| {red_line.label} | {len(before_ids)} | {len(after_ids)} | "
+                   f"{', '.join(sorted(after_ids)) or '-'} |")
+    out.append("")
+    for breach in after_breaches:
+        out.append(f"- after, {breach.conversation_id} turn {breach.turn}, {breach.red_line.label}: "
+                   f"`{breach.evidence}`")
+    if after_breaches:
+        out.append("")
 
     out.append("### What each metric means")
     out.append("")
