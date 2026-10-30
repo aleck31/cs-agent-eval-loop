@@ -6,11 +6,14 @@ Evaluate API accepted, so a future refactor cannot quietly break it.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from cs_eval import config as cfg
-from cs_eval.dataset import DatasetError, load_dataset
-from cs_eval.evaluate import BudgetExceeded, BudgetGuard, EvaluationClient, Score
+from cs_eval.dataset import DatasetError, load_dataset, load_golden_set
+from cs_eval.evaluate import BudgetExceeded, BudgetGuard, EvaluationClient, RunResult, Score
 from cs_eval.report import NOISE_FLOOR, aggregate_metric, build_rows
 from cs_eval.spans import SCOPE_NAME, build_session_spans
 from cs_eval.tools import (
@@ -21,7 +24,7 @@ from cs_eval.tools import (
     lookup_transaction,
 )
 
-DATASET = "data/conversations.yaml"
+DATASET = "data/golden_set.yaml"
 
 TURNS = [
     {
@@ -145,6 +148,48 @@ def test_every_expected_tool_exists():
     for conversation in load_dataset(DATASET):
         for tool_name in conversation.ground_truth.expected_trajectory:
             assert tool_name in names, f"{conversation.id} expects unknown tool {tool_name}"
+
+
+# --- golden set --------------------------------------------------------------
+def _write_golden(path, *, assertion="Holds.", title="t", version=1):
+    path.write_text(
+        f"golden_set:\n  name: demo\n  version: {version}\n"
+        f"conversations:\n  - id: x\n    title: {title}\n    user_turns: ['a']\n"
+        f"    ground_truth:\n      assertions: ['{assertion}']\n",
+        encoding="utf-8",
+    )
+    return load_golden_set(path)
+
+
+def test_shipped_golden_set_is_named_and_versioned():
+    golden = load_golden_set(DATASET)
+    assert golden.name == "cex-support"
+    assert golden.version != "unversioned"
+    assert golden.fingerprint in golden.label
+
+
+def test_fingerprint_tracks_ground_truth_not_display_fields(tmp_path):
+    base = _write_golden(tmp_path / "a.yaml").fingerprint
+    assert _write_golden(tmp_path / "b.yaml", title="renamed").fingerprint == base
+    assert _write_golden(tmp_path / "c.yaml", assertion="Changed.").fingerprint != base
+
+
+def test_committed_fixtures_were_scored_on_the_shipped_golden_set():
+    """Editing the golden set without re-running live would make replay compare against a different yardstick."""
+    fingerprint = load_golden_set(DATASET).fingerprint
+    for variant in ("baseline", "improved"):
+        payload = json.loads(Path(f"fixtures/{variant}.json").read_text(encoding="utf-8"))
+        assert payload["golden_set_fingerprint"] == fingerprint, variant
+
+
+def test_mismatched_fixture_is_flagged(tmp_path):
+    from cs_eval.cli import golden_set_mismatches
+
+    golden = _write_golden(tmp_path / "g.yaml")
+    same = RunResult(variant="baseline", golden_set_fingerprint=golden.fingerprint)
+    stale = RunResult(variant="improved", golden_set_fingerprint="000000000000")
+    warnings = golden_set_mismatches(golden, same, stale)
+    assert len(warnings) == 1 and "improved" in warnings[0]
 
 
 def test_rejects_missing_turns(tmp_path):

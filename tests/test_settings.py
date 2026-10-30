@@ -115,7 +115,7 @@ def test_bad_numeric_setting_is_rejected(monkeypatch):
 
 def test_relative_dataset_path_anchors_to_repo_root():
     """Commands must work when run from a directory other than the repo root."""
-    resolved = settings.resolve_path("data/conversations.yaml")
+    resolved = settings.resolve_path("data/golden_set.yaml")
     assert resolved.is_absolute()
     assert resolved.exists()
 

@@ -1,5 +1,12 @@
+# GOLDEN SET: the fixed yardstick every prompt variant is scored against.
 # Synthetic crypto-exchange (CEX) customer-service conversations.
 # NO REAL CUSTOMER DATA. Every UID, transaction ID, amount and balance is invented.
+#
+# Rules that make it golden:
+#   - Every case carries ground truth (assertions = the SOP and its red lines); a case without it is not golden.
+#   - Before and after are scored on the identical set. Any edit changes the fingerprint and invalidates old fixtures.
+#   - Bump golden_set.version on every edit, so a report names exactly which yardstick it used.
+#   - Grow it from real failures: a new expensive mistake becomes a new case.
 #
 # Chinese-primary (the target support queue is Chinese-language), plus 3 English
 # cases so built-in evaluator behaviour can be sanity-checked against a language
@@ -22,9 +29,11 @@
 # early turns from trace-level scoring.
 #
 # TO SWAP IN YOUR OWN DATA: keep these fields and replace the file. See README
-# section "Using your own conversations". No code change is required.
+# section "Building your own golden set". No code change is required.
 #
 # Fields
+#   golden_set.name         label shown in every report
+#   golden_set.version      bump on any edit to the cases below
 #   id                      stable short ID, shown in the report
 #   lang                    zh | en   (display only)
 #   title                   human label for the report row
@@ -36,6 +45,10 @@
 #   ground_truth.expected_trajectory
 #                           tool names the agent should have called
 #   notes                   why this case exists; not sent to the API
+
+golden_set:
+  name: cex-support
+  version: 1
 
 conversations:
   - id: cs-001

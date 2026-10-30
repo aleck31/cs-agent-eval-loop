@@ -62,6 +62,7 @@ class RunResult:
     """All scores for one prompt variant."""
 
     variant: str
+    golden_set_fingerprint: str = ""
     scores: list[Score] = field(default_factory=list)
     judge_calls: int = 0
     input_tokens: int = 0

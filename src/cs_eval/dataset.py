@@ -1,5 +1,7 @@
-"""Dataset loading and validation.
+"""Golden set loading and validation.
 
+The golden set is the fixed yardstick: the same conversations and ground truth score
+every prompt variant, so a before/after delta measures the agent, not the test.
 The schema is intentionally small so you can swap this file for an export of your
 own tickets without touching code. Validation is strict and fails loudly:
 a malformed dataset should not become a mysterious evaluation result.
@@ -7,6 +9,8 @@ a malformed dataset should not become a mysterious evaluation result.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,6 +44,32 @@ class Conversation:
         return len(self.user_turns)
 
 
+@dataclass(frozen=True)
+class GoldenSet:
+    name: str
+    version: str
+    conversations: list[Conversation]
+
+    @property
+    def fingerprint(self) -> str:
+        """Hash of everything that affects scoring; titles and notes are display-only."""
+        content = [
+            {
+                "id": c.id,
+                "user_turns": c.user_turns,
+                "assertions": c.ground_truth.assertions,
+                "expected_trajectory": c.ground_truth.expected_trajectory,
+            }
+            for c in self.conversations
+        ]
+        blob = json.dumps(content, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+    @property
+    def label(self) -> str:
+        return f"{self.name} v{self.version} ({self.fingerprint})"
+
+
 class DatasetError(ValueError):
     """Raised when the dataset file is malformed."""
 
@@ -50,11 +80,18 @@ def _require(condition: bool, message: str) -> None:
 
 
 def load_dataset(path: str | Path) -> list[Conversation]:
-    """Load and validate the conversation dataset."""
+    """Load and validate the golden set's conversations."""
+    return load_golden_set(path).conversations
+
+
+def load_golden_set(path: str | Path) -> GoldenSet:
+    """Load and validate the golden set, including its name and version."""
     file_path = Path(path)
-    _require(file_path.exists(), f"dataset not found: {file_path}")
+    _require(file_path.exists(), f"golden set not found: {file_path} (set CS_EVAL_DATA or --data)")
 
     raw = yaml.safe_load(file_path.read_text(encoding="utf-8")) or {}
+    meta = raw.get("golden_set") or {}
+    _require(isinstance(meta, dict), "'golden_set' must be a mapping with name and version")
     entries = raw.get("conversations")
     _require(isinstance(entries, list) and bool(entries), "dataset has no 'conversations' list")
 
@@ -103,7 +140,11 @@ def load_dataset(path: str | Path) -> list[Conversation]:
             )
         )
 
-    return conversations
+    return GoldenSet(
+        name=str(meta.get("name") or file_path.stem),
+        version=str(meta.get("version") or "unversioned"),
+        conversations=conversations,
+    )
 
 
 def dataset_warnings(conversations: list[Conversation]) -> list[str]:

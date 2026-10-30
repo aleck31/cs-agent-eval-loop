@@ -36,7 +36,7 @@ DEFAULTS: dict[str, str] = {
     "CS_EVAL_TEMPERATURE": "0.0",
     "CS_EVAL_MAX_USD": "5.00",
     "CS_EVAL_EVALUATORS": "core",
-    "CS_EVAL_DATA": "data/conversations.yaml",
+    "CS_EVAL_DATA": "data/golden_set.yaml",
     "CS_EVAL_BASELINE": "baseline",
     "CS_EVAL_IMPROVED": "improved",
     "CS_EVAL_LIMIT": "0",
@@ -139,7 +139,7 @@ def get_int(name: str) -> int:
 def resolve_path(value: str | Path) -> Path:
     """Make a configured path absolute, relative to the repo root.
 
-    `.env.example` writes `CS_EVAL_DATA=data/conversations.yaml` because that is
+    `.env.example` writes `CS_EVAL_DATA=data/golden_set.yaml` because that is
     what a reader expects to see. Anchoring to ROOT rather than the process working
     directory means the command still works when run from elsewhere.
     """
