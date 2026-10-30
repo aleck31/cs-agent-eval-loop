@@ -54,11 +54,15 @@ def render(results: list[Spread], repeats: int) -> str:
     lines = [f"JUDGE STABILITY ({repeats} repeats per case; repeatability, not correctness)", ""]
     lines.append(f"{'Metric':<24}{'Case':<9}{'Mean':>6}{'Range':>7}{'Stdev':>7}  Scores")
     for spread in results:
+        if not spread.values:
+            lines.append(f"{spread.evaluator.metric[:23]:<24}{spread.conversation_id:<9}"
+                         f"{'n/a':>6}  every repeat failed; see the evaluation failures")
+            continue
         scores = " ".join(f"{v:.2f}" for v in spread.values)
         flag = "" if spread.within_noise_floor else "  > noise floor"
         lines.append(
             f"{spread.evaluator.metric[:23]:<24}{spread.conversation_id:<9}"
-            f"{mean(spread.values) if spread.values else 0:>6.2f}{spread.range:>7.2f}"
+            f"{mean(spread.values):>6.2f}{spread.range:>7.2f}"
             f"{spread.stdev:>7.2f}  {scores}{flag}"
         )
     worst = max((s.range for s in results), default=0.0)

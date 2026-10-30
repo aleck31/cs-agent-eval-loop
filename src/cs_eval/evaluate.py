@@ -29,6 +29,10 @@ from cs_eval.dataset import Conversation
 from cs_eval.spans import build_session_spans
 
 RETRYABLE = {"ThrottlingException", "InternalServerException", "ServiceQuotaExceededException"}
+# Result-level error seen intermittently on custom judges with Sonnet 5.5: the service
+# sends the judge an empty text block. The same request succeeds on retry.
+RETRYABLE_RESULT = {"ValidationException"}
+RESULT_ATTEMPTS = 3
 
 
 class BudgetExceeded(RuntimeError):
@@ -267,7 +271,11 @@ class EvaluationClient:
                 }
                 if reference_inputs:
                     request["evaluationReferenceInputs"] = reference_inputs
-                response = self._evaluate_with_retry(request)
+                for _ in range(RESULT_ATTEMPTS if evaluator.is_custom else 1):
+                    response = self._evaluate_with_retry(request)
+                    codes = {r.get("errorCode") for r in response.get("evaluationResults", [])}
+                    if not codes & RETRYABLE_RESULT:
+                        break
             except (ClientError, MissingEvaluator) as exc:
                 code = (
                     exc.response.get("Error", {}).get("Code", "Error")

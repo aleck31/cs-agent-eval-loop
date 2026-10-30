@@ -498,3 +498,23 @@ def test_fixture_without_model_field_takes_it_from_its_transcripts():
     run = load_run("baseline")
     assert run.label == "baseline"
     assert run.model == run.transcripts[0]["turns"][0]["model"]
+
+
+def test_custom_judge_retries_a_transient_result_error():
+    from cs_eval.dataset import load_golden_set
+
+    judge = next(e for e in cfg.CORE if e.is_custom)
+    client = EvaluationClient.__new__(EvaluationClient)
+    client.guard = None
+    client._custom_ids = {"cs_redline_judge": "cs_redline_judge-AbCdEf1234"}
+    replies = iter([
+        {"evaluationResults": [{"errorCode": "ValidationException"}]},
+        {"evaluationResults": [{"value": 1.0, "label": "Clean"}]},
+    ])
+    client._evaluate_with_retry = lambda request: next(replies)
+    case = load_golden_set(DATASET).conversations[0]
+    scores, _, _, failures = client.score_conversation(
+        conversation=case, transcript_turns=TURNS, evaluators=(judge,),
+        system_prompt="p", tool_specs=TOOL_SPECS,
+    )
+    assert [s.value for s in scores] == [1.0] and failures == []
