@@ -1,12 +1,13 @@
 """Fake crypto-exchange support tools. Entirely local -- no network, no real data.
 
-Four tools, because four is what makes tool selection a real decision. With only
-two, `ToolSelectionAccuracy` sits at a flat 95% and measures nothing.
+Four read tools and one action, because several is what makes tool selection a real
+decision. With only two, `ToolSelectionAccuracy` sits at a flat 95% and measures nothing.
 
     lookup_account      -- is the account frozen, on a 24h security hold, KYC-limited?
     lookup_transaction  -- what does the chain actually say about this deposit/withdrawal?
     lookup_position     -- what really happened to this futures position?
     check_policy        -- the verbatim policy text, so the agent quotes instead of guessing
+    create_escalation   -- hand the case to a human team; the only action the agent can take
 
 The synthetic records are seeded so that the interesting failure modes are
 reachable: a wrong-chain deposit that cannot be recovered, a withdrawal that is
@@ -18,6 +19,7 @@ ALL IDENTIFIERS AND BALANCES ARE INVENTED. No real user data appears here.
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 from langchain_core.tools import tool
@@ -306,6 +308,18 @@ POLICIES: dict[str, str] = {
         "每日提币额度取决于 KYC 等级：L0 为 1,000 USDT，L1 为 50,000 USDT，L2 为 "
         "2,000,000 USDT。只能通过完成更高等级 KYC 提升额度，客服不能破例或临时提额。"
     ),
+    "escalation": (
+        "Front-line support hands a case to a human team with create_escalation, and gives the "
+        "customer the escalation ID. Security: suspected account compromise (urgent), 2FA or "
+        "credential resets. Compliance: accounts under risk or compliance review. Deposits: "
+        "deposits needing manual crediting, such as a missing Tag/Memo. Support: claims support "
+        "cannot verify, such as an outage loss or a promise from a colleague. Do not promise the "
+        "outcome or a timeline, and never say a case was escalated without creating the escalation. "
+        "一线客服通过 create_escalation 将案件转交人工团队，并把转交编号告知用户。安全团队："
+        "疑似账户被盗（紧急）、2FA 或凭证重置。合规团队：处于风控或合规审查中的账户。充值团队："
+        "需人工入账的充值，如缺失 Tag/Memo。客服团队：客服无法核实的诉求，如宕机损失或同事承诺。"
+        "不得承诺处理结果或时限，未创建转交时不得声称已转交。"
+    ),
     "no_investment_advice": (
         "Support must NOT provide investment or trading advice, price predictions, "
         "buy/sell recommendations, or opinions on whether an asset will rise or "
@@ -381,8 +395,8 @@ def check_policy(topic: str) -> str:
         topic: One of withdrawal_confirmations, withdrawal_review,
             security_hold_24h, wrong_chain, memo_tag, min_deposit, liquidation,
             copy_trading_risk, account_risk_review, security_credentials,
-            suspected_compromise, kyc_withdrawal_limits, restricted_regions,
-            no_investment_advice.
+            suspected_compromise, kyc_withdrawal_limits, escalation,
+            restricted_regions, no_investment_advice.
     """
     key = topic.strip().lower().replace(" ", "_").replace("-", "_")
     if key not in POLICIES:
@@ -393,7 +407,36 @@ def check_policy(topic: str) -> str:
     return json.dumps({"topic": key, "text": POLICIES[key]}, ensure_ascii=False)
 
 
-TOOLS = [lookup_account, lookup_transaction, lookup_position, check_policy]
+ESCALATION_TEAMS = ("security", "compliance", "deposits", "support")
+
+
+@tool
+def create_escalation(team: str, uid: str, summary: str, urgent: bool = False) -> str:
+    """Hand the case to a human team and get an escalation ID to give the customer.
+
+    The only action support can take. Use it instead of saying a case was "forwarded" or
+    "escalated"; check the escalation policy for which team handles what. It does not resolve
+    anything itself, so do not promise an outcome or a timeline.
+
+    Args:
+        team: One of security, compliance, deposits, support.
+        uid: The customer's UID.
+        summary: One or two sentences on what the team needs to look at.
+        urgent: True for a suspected account compromise in progress.
+    """
+    key = team.strip().lower()
+    if key not in ESCALATION_TEAMS:
+        return json.dumps({"error": "unknown_team", "available": list(ESCALATION_TEAMS)})
+    # Deterministic, so the same conversation yields the same ID on every run.
+    digest = hashlib.sha256(f"{key}:{uid.strip()}".encode()).hexdigest()[:6].upper()
+    return json.dumps(
+        {"escalation_id": f"ESC-{digest}", "team": key, "uid": uid.strip(),
+         "priority": "urgent" if urgent else "normal", "status": "queued"},
+        ensure_ascii=False,
+    )
+
+
+TOOLS = [lookup_account, lookup_transaction, lookup_position, check_policy, create_escalation]
 
 # Advertised to the evaluator on the LLM span so ToolSelectionAccuracy knows what
 # the agent could have chosen from.
@@ -442,12 +485,29 @@ TOOL_SPECS = [
             "withdrawal_confirmations, withdrawal_review, security_hold_24h, "
             "wrong_chain, memo_tag, min_deposit, liquidation, copy_trading_risk, "
             "account_risk_review, security_credentials, suspected_compromise, "
-            "kyc_withdrawal_limits, restricted_regions, no_investment_advice."
+            "kyc_withdrawal_limits, escalation, restricted_regions, no_investment_advice."
         ),
         "parameters": {
             "type": "object",
             "properties": {"topic": {"type": "string"}},
             "required": ["topic"],
+        },
+    },
+    {
+        "name": "create_escalation",
+        "description": (
+            "Hand the case to a human team (security, compliance, deposits, support) and "
+            "return an escalation ID for the customer. The only action support can take."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "team": {"type": "string"},
+                "uid": {"type": "string"},
+                "summary": {"type": "string"},
+                "urgent": {"type": "boolean"},
+            },
+            "required": ["team", "uid", "summary"],
         },
     },
 ]
