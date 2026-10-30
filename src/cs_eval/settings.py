@@ -32,8 +32,7 @@ DEFAULTS: dict[str, str] = {
     # Set a named profile in .env if you use one; no profile name is committed here.
     "AWS_PROFILE": "",
     "AWS_REGION": "us-east-1",
-    "CS_EVAL_MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "CS_EVAL_TEMPERATURE": "0.0",
+    "CS_EVAL_MODEL_ID": "us.anthropic.claude-sonnet-5-5",
     "CS_EVAL_MAX_USD": "5.00",
     "CS_EVAL_EVALUATORS": "core",
     "CS_EVAL_DATA": "data/golden_set.yaml",

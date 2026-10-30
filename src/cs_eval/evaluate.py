@@ -24,7 +24,7 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from cs_eval.config import SESSION, TOOL_CALL, TRACE, Evaluator, estimate_cost
+from cs_eval.config import SESSION, TOOL_CALL, TRACE, Evaluator, estimate_cost, judge_cost
 from cs_eval.dataset import Conversation
 from cs_eval.spans import build_session_spans
 
@@ -72,10 +72,7 @@ class RunResult:
 
     @property
     def cost_usd(self) -> float:
-        return (
-            self.input_tokens / 1000 * 0.003
-            + self.output_tokens / 1000 * 0.015
-        )
+        return judge_cost(self.input_tokens, self.output_tokens)
 
 
 class BudgetGuard:
@@ -88,7 +85,7 @@ class BudgetGuard:
 
     @property
     def spent_usd(self) -> float:
-        return self.input_tokens / 1000 * 0.003 + self.output_tokens / 1000 * 0.015
+        return judge_cost(self.input_tokens, self.output_tokens)
 
     @property
     def remaining_usd(self) -> float:

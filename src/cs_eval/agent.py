@@ -65,24 +65,13 @@ class Transcript:
         }
 
 
-def build_agent(
-    system_prompt: str,
-    region: str,
-    temperature: float | None = None,
-    model: str | None = None,
-):
+def build_agent(system_prompt: str, region: str, model: str | None = None):
     """Compile the LangGraph agent. Same construction as the reference pattern."""
     from langchain.agents import create_agent
 
+    # No temperature: current Claude models reject sampling parameters.
     bedrock = ChatBedrock(
-        model_id=model or model_id(),
-        region_name=region,
-        temperature=(
-            temperature
-            if temperature is not None
-            else settings.get_float("CS_EVAL_TEMPERATURE")
-        ),
-        beta_use_converse_api=True,
+        model_id=model or model_id(), region_name=region, beta_use_converse_api=True
     )
     return create_agent(model=bedrock, tools=TOOLS, system_prompt=system_prompt)
 

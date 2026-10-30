@@ -81,7 +81,7 @@ def propose_prompt(
     current_prompt: str,
     findings: list[dict[str, str]],
     region: str,
-    max_tokens: int = 1500,
+    max_tokens: int = 8000,
 ) -> tuple[str, int, int]:
     """Ask Bedrock for a replacement prompt. Returns (text, in_tokens, out_tokens)."""
     if not findings:
@@ -100,9 +100,11 @@ def propose_prompt(
     response = client.converse(
         modelId=settings.get("CS_EVAL_MODEL_ID"),
         messages=[{"role": "user", "content": [{"text": payload}]}],
-        inferenceConfig={"maxTokens": max_tokens, "temperature": 0.2},
+        inferenceConfig={"maxTokens": max_tokens},
     )
-    text = response["output"]["message"]["content"][0]["text"].strip()
+    # Adaptive thinking puts a reasoning block before the text, so join text blocks only.
+    blocks = response["output"]["message"]["content"]
+    text = "".join(b["text"] for b in blocks if "text" in b).strip()
     usage = response.get("usage", {})
     return text, usage.get("inputTokens", 0), usage.get("outputTokens", 0)
 

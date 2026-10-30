@@ -421,7 +421,8 @@ def cmd_propose(args: argparse.Namespace) -> int:
     text, in_tokens, out_tokens = propose_prompt(
         current_prompt=current, findings=findings, region=args.region
     )
-    cost = in_tokens / 1000 * 0.003 + out_tokens / 1000 * 0.015
+    cost = (in_tokens / 1000 * cfg.AGENT_PRICE_INPUT_PER_1K
+            + out_tokens / 1000 * cfg.AGENT_PRICE_OUTPUT_PER_1K)
 
     target = PROMPTS / f"{args.improved}.md"
     target.write_text(

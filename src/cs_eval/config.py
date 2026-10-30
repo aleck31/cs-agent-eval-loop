@@ -214,9 +214,18 @@ def select(profile: str = "core") -> tuple[Evaluator, ...]:
 JUDGE_INPUT_TOKENS = 900
 JUDGE_OUTPUT_TOKENS = 350
 
-# Claude Sonnet 4.5 on-demand, us-east-1, USD per 1K tokens.
+# Judge token rate, USD per 1K. Built-in judges run service-side on a model we do not
+# choose; this is the rate the committed runs were costed at.
 PRICE_INPUT_PER_1K = 0.003
 PRICE_OUTPUT_PER_1K = 0.015
+
+# Agent-model rate (CS_EVAL_MODEL_ID), USD per 1K: Sonnet 5.5 via the us.* inference profile.
+AGENT_PRICE_INPUT_PER_1K = 0.0022
+AGENT_PRICE_OUTPUT_PER_1K = 0.011
+
+
+def judge_cost(input_tokens: int, output_tokens: int) -> float:
+    return input_tokens / 1000 * PRICE_INPUT_PER_1K + output_tokens / 1000 * PRICE_OUTPUT_PER_1K
 
 COST_PER_JUDGE_CALL = (
     JUDGE_INPUT_TOKENS / 1000 * PRICE_INPUT_PER_1K
