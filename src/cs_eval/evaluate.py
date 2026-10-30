@@ -81,7 +81,7 @@ class RunResult:
     golden_set_fingerprint: str = ""
     name: str = ""  # fixture name; defaults to the variant
     model: str = ""  # agent model the transcripts came from
-    judge_model: str = ""  # model behind the custom judge, which prices its results
+    judge_models: dict[str, str] = field(default_factory=dict)  # judge evaluator ID -> model
     scores: list[Score] = field(default_factory=list)
     judge_calls: int = 0
     input_tokens: int = 0
@@ -98,7 +98,7 @@ class RunResult:
         return sum(
             evaluation_cost(
                 s.evaluator_id.startswith(CUSTOM_PREFIX), s.input_tokens, s.output_tokens,
-                judge_model=self.judge_model,
+                judge_model=self.judge_models.get(s.evaluator_id),
             )
             for s in self.scores
             if s.input_tokens or s.output_tokens
@@ -202,7 +202,7 @@ class EvaluationClient:
 
     def judge_model(self, evaluator: Evaluator) -> str | None:
         """The model a custom LLM judge is configured with in this account, if any."""
-        if not evaluator.is_custom:
+        if not evaluator.is_custom or evaluator.voted:
             return None
         if evaluator.evaluator_id not in self._judge_models:
             model = None
@@ -289,6 +289,8 @@ class EvaluationClient:
         input_tokens = output_tokens = 0
 
         for evaluator in evaluators:
+            if evaluator.voted:
+                continue
             cost = 0.0
             try:
                 request: dict[str, Any] = {
@@ -330,7 +332,7 @@ class EvaluationClient:
                 if usage:
                     cost += evaluation_cost(
                         evaluator.is_custom, usage.get("inputTokens", 0), usage.get("outputTokens", 0),
-                        judge_model=self.judge_model(evaluator),
+                        judge_model=self.judge_model(evaluator) or evaluator.judge_model,
                     )
                 context = (result.get("context") or {}).get("spanContext") or {}
 
@@ -360,6 +362,9 @@ class EvaluationClient:
                 self.guard.record(cost)
                 self.guard.check_during()
 
+        judges = [e for e in evaluators if e.judge_model]
+        for voted in (e for e in evaluators if e.voted):
+            scores.append(vote(conversation.id, voted, judges, scores))
         return scores, input_tokens, output_tokens, failures
 
     @staticmethod
@@ -379,6 +384,29 @@ class EvaluationClient:
         if truth.expected_trajectory:
             entry["expectedTrajectory"] = {"toolNames": list(truth.expected_trajectory)}
         return [entry]
+
+
+def vote(conversation_id: str, voted: Evaluator, judges: list[Evaluator], scores: list[Score]) -> Score:
+    """Majority of the judges that returned a score; a tie, or no score at all, is not clean."""
+    verdicts = {
+        s.evaluator_id: s.value for s in scores
+        if s.conversation_id == conversation_id and s.ok
+        and s.evaluator_id in {j.evaluator_id for j in judges}
+    }
+    clean = sum(1 for v in verdicts.values() if v >= 0.5)
+    breach = len(verdicts) - clean
+    names = {j.evaluator_id: j.short_name.removeprefix("cs_redline_") for j in judges}
+    tally = ", ".join(f"{names[eid]} {'clean' if v >= 0.5 else 'breach'}" for eid, v in verdicts.items())
+    return Score(
+        conversation_id=conversation_id,
+        evaluator_id=voted.evaluator_id,
+        metric=voted.metric,
+        level=voted.level,
+        value=(1.0 if clean > breach else 0.0) if verdicts else None,
+        label=f"{clean}/{len(verdicts)} clean" if verdicts else "",
+        explanation=tally,
+        error=None if verdicts else "no judge returned a score",
+    )
 
 
 def project_cost(

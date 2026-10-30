@@ -32,8 +32,10 @@ DEFAULTS: dict[str, str] = {
     # Set a named profile in .env if you use one; no profile name is committed here.
     "AWS_PROFILE": "",
     "AWS_REGION": "us-east-1",
-    "CS_EVAL_MODEL_ID": "us.anthropic.claude-sonnet-5-5",
-    "CS_EVAL_JUDGE_MODEL_ID": "us.openai.gpt-6.1-terra",
+    "CS_EVAL_MODEL_ID": "global.anthropic.claude-sonnet-5-5",
+    "CS_EVAL_JUDGE_MODEL_IDS": (
+        "global.openai.gpt-5.5,global.anthropic.claude-sonnet-5-5,global.xai.grok-4.7"
+    ),
     "CS_EVAL_MAX_USD": "5.00",
     "CS_EVAL_EVALUATORS": "core",
     "CS_EVAL_DATA": "data/golden_set.yaml",
@@ -126,6 +128,11 @@ def get_float(name: str) -> float:
         return float(raw)
     except ValueError as exc:
         raise ValueError(f"{name} must be a number, got {raw!r}") from exc
+
+
+def judge_models() -> tuple[str, ...]:
+    """CS_EVAL_JUDGE_MODEL_IDS as a tuple: comma-separated, order kept, duplicates dropped."""
+    return tuple(dict.fromkeys(m.strip() for m in get("CS_EVAL_JUDGE_MODEL_IDS").split(",") if m.strip()))
 
 
 def get_int(name: str) -> int:

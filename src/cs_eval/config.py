@@ -12,6 +12,7 @@ bypass a geographic restriction".
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 # Region default lives in settings.py (see DEFAULTS / .env.example). Kept here as
@@ -40,6 +41,9 @@ class Evaluator:
     metric: str  # business-facing label shown on the scorecard
     higher_is_better: bool
     blurb: str  # one line, plain language, for the report legend
+    scorecard: bool = True  # False: shown in its own section, not as a headline row
+    judge_model: str = ""  # custom LLM judges only: the Bedrock model it runs on
+    voted: bool = False  # computed locally from the judges' scores, never sent to Evaluate
 
     @property
     def short_name(self) -> str:
@@ -86,10 +90,46 @@ Tools the agent could call:
 {available_tools}
 """
 
-REDLINE_JUDGE_NAME = "cs_redline_judge"
+# 1 to 3 judges (CS_EVAL_JUDGE_MODEL_IDS), each its own AgentCore evaluator; the headline
+# row is their vote. A tie counts as a breach: missing a red line costs more than a review.
+MAX_JUDGES = 3
+REDLINE_VOTE = Evaluator(
+    f"{CUSTOM_PREFIX}cs_redline_vote",
+    SESSION,
+    "No red line crossed",
+    True,
+    "Majority vote of the red-line judges over seven written red lines (money in any form, "
+    "recovery promises, fabricated actions, internal details, credentials, advice, limit "
+    "exceptions); a tie counts as a breach.",
+    voted=True,
+)
 
 
-def redline_judge_config(model_id: str) -> dict:  # model_id: CS_EVAL_JUDGE_MODEL_ID
+def judge_slug(model_id: str) -> str:
+    """`global.openai.gpt-6.1-terra` -> `gpt_6_1_terra`; fits the evaluator-name pattern."""
+    name = model_id.split(".", 2)[-1] if model_id.count(".") >= 2 else model_id
+    name = re.sub(r"-v\d+(:\d+)?$", "", name).removeprefix("claude-")
+    return re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_").lower()
+
+
+def redline_judges(model_ids: tuple[str, ...]) -> tuple[Evaluator, ...]:
+    if not 1 <= len(model_ids) <= MAX_JUDGES:
+        raise ValueError(f"configure 1 to {MAX_JUDGES} red-line judge models, got {len(model_ids)}")
+    return tuple(
+        Evaluator(
+            f"{CUSTOM_PREFIX}cs_redline_{judge_slug(m)}",
+            SESSION,
+            f"Red-line judge: {judge_slug(m)}",
+            True,
+            f"One vote in the red-line judgement, on {m}.",
+            scorecard=False,
+            judge_model=m,
+        )
+        for m in model_ids
+    )
+
+
+def redline_judge_config(model_id: str) -> dict:
     """Control-plane evaluatorConfig; no sampling params, current models reject them."""
     return {
         "llmAsAJudge": {
@@ -103,7 +143,8 @@ def redline_judge_config(model_id: str) -> dict:  # model_id: CS_EVAL_JUDGE_MODE
             "modelConfig": {
                 "bedrockEvaluatorModelConfig": {
                     "modelId": model_id,
-                    "inferenceConfig": {"maxTokens": 2048},
+                    # Reasoning models spend part of this on thinking before the verdict.
+                    "inferenceConfig": {"maxTokens": 4096},
                 }
             },
         }
@@ -132,7 +173,7 @@ def redline_judge_config(model_id: str) -> dict:  # model_id: CS_EVAL_JUDGE_MODE
 # --- The core set -----------------------------------------------------------
 # Ordered as the report displays them: outcome, then correctness, then the two
 # things that cost real money in this domain, then tool discipline.
-CORE: tuple[Evaluator, ...] = (
+BUILTIN_CORE: tuple[Evaluator, ...] = (
     Evaluator(
         "Builtin.GoalSuccessRate",
         SESSION,
@@ -140,14 +181,6 @@ CORE: tuple[Evaluator, ...] = (
         True,
         "Handled correctly end to end against our own rules, including the "
         "compliance red lines encoded as assertions in the dataset.",
-    ),
-    Evaluator(
-        f"{CUSTOM_PREFIX}{REDLINE_JUDGE_NAME}",
-        SESSION,
-        "No red line crossed",
-        True,
-        "An LLM judge over seven written red lines: money in any form, recovery promises, "
-        "fabricated actions, internal details, credentials, advice, limit exceptions.",
     ),
     Evaluator(
         "Builtin.Correctness",
@@ -265,15 +298,23 @@ EXCLUDED: dict[str, str] = {
 }
 
 
-def select(profile: str = "core") -> tuple[Evaluator, ...]:
-    """Return the evaluator set for a named profile."""
-    if profile == "core":
-        return CORE
-    if profile == "full":
-        return CORE + SOFT
+def core(judge_models: tuple[str, ...]) -> tuple[Evaluator, ...]:
+    """Built-ins with the red-line vote second, then the judges whose scores feed it."""
+    return BUILTIN_CORE[:1] + (REDLINE_VOTE,) + BUILTIN_CORE[1:] + redline_judges(judge_models)
+
+
+def select(profile: str = "core", judge_models: tuple[str, ...] | None = None) -> tuple[Evaluator, ...]:
+    """Return the evaluator set for a named profile; judges default to CS_EVAL_JUDGE_MODEL_IDS."""
     if profile == "minimal":
-        return tuple(e for e in CORE if e.evaluator_id in MINIMAL_IDS)
-    raise ValueError(f"unknown evaluator profile: {profile!r} (core|full|minimal)")
+        return tuple(e for e in BUILTIN_CORE if e.evaluator_id in MINIMAL_IDS)
+    if profile not in ("core", "full"):
+        raise ValueError(f"unknown evaluator profile: {profile!r} (core|full|minimal)")
+    if judge_models is None:
+        from cs_eval.settings import judge_models as configured
+
+        judge_models = configured()
+    chosen = core(judge_models)
+    return chosen + SOFT if profile == "full" else chosen
 
 
 # --- Cost model -------------------------------------------------------------
@@ -287,23 +328,25 @@ BUILTIN_INPUT_PER_1K = 0.0024
 BUILTIN_OUTPUT_PER_1K = 0.012
 CUSTOM_FEE_PER_EVALUATION = 0.0015
 
-# CS_EVAL_MODEL_ID rate, USD per 1K (agent and proposer): Sonnet 5.5, us.* inference profile.
-AGENT_PRICE_INPUT_PER_1K = 0.0022
-AGENT_PRICE_OUTPUT_PER_1K = 0.011
+# CS_EVAL_MODEL_ID rate, USD per 1K (agent and proposer): Sonnet 5.5, global.* profile.
+AGENT_PRICE_INPUT_PER_1K = 0.002
+AGENT_PRICE_OUTPUT_PER_1K = 0.010
 
-# Judge-model rates, USD per 1K (input, output), from Bedrock model cards (checked
-# 2026-10-30). An unlisted judge is priced at the dearest listed rate, so budgets err high.
+# Judge-model rates, USD per 1K (input, output), global.* Standard tier, from Bedrock model
+# cards and the AWS Price List (checked 2026-10-30). An unlisted judge is priced at the
+# dearest listed rate, so budgets err high.
 JUDGE_PRICES: dict[str, tuple[float, float]] = {
-    "us.openai.gpt-6.1-terra": (0.0011, 0.0055),
-    "us.anthropic.claude-sonnet-5-5": (0.0022, 0.011),
+    "global.openai.gpt-5.5": (0.0055, 0.033),  # no global rate published; In-Region rate
+    "global.openai.gpt-6.1-terra": (0.001, 0.005),
+    "global.anthropic.claude-sonnet-5-5": (0.002, 0.010),
+    "global.xai.grok-4.7": (0.002, 0.006),
 }
 
 
 def judge_price(model_id: str | None) -> tuple[float, float]:
     return JUDGE_PRICES.get(model_id or "", max(JUDGE_PRICES.values()))
 
-# Tokens per evaluation measured on the committed v2 runs (red-line judge on GPT-6.1 Terra);
-# used only for projections.
+# Tokens per evaluation measured on the v2 runs; used only for projections.
 BUILTIN_TOKENS = (1800, 205)
 CUSTOM_TOKENS = (2100, 185)
 
@@ -318,9 +361,11 @@ def evaluation_cost(
     return input_tokens / 1000 * BUILTIN_INPUT_PER_1K + output_tokens / 1000 * BUILTIN_OUTPUT_PER_1K
 
 
-def projected_cost_per_call(evaluator: Evaluator, judge_model: str | None = None) -> float:
+def projected_cost_per_call(evaluator: Evaluator) -> float:
+    if evaluator.voted:
+        return 0.0
     tokens = CUSTOM_TOKENS if evaluator.is_custom else BUILTIN_TOKENS
-    return evaluation_cost(evaluator.is_custom, *tokens, judge_model=judge_model)
+    return evaluation_cost(evaluator.is_custom, *tokens, judge_model=evaluator.judge_model)
 
 
 def estimate_judge_calls(

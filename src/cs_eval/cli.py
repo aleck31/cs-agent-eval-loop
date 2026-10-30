@@ -55,6 +55,7 @@ from cs_eval.spans import build_session_spans
 from cs_eval.report import (
     build_case_matrix,
     build_rows,
+    judge_panel,
     render_markdown,
     render_terminal,
 )
@@ -77,7 +78,7 @@ def save_run(result: RunResult) -> None:
         "variant": result.variant,
         "name": result.label,
         "model": result.model,
-        "judge_model": result.judge_model,
+        "judge_models": result.judge_models,
         "golden_set_fingerprint": result.golden_set_fingerprint,
         "generated": datetime.now(timezone.utc).isoformat(),
         "judge_calls": result.judge_calls,
@@ -106,7 +107,7 @@ def load_run(name: str) -> RunResult:
         variant=payload["variant"],
         name=payload.get("name", name),
         model=payload.get("model") or first_turns[0].get("model", ""),
-        judge_model=payload.get("judge_model", ""),
+        judge_models=payload.get("judge_models", {}),
         golden_set_fingerprint=payload.get("golden_set_fingerprint", ""),
         scores=[Score(**s) for s in payload["scores"]],
         judge_calls=payload.get("judge_calls", 0),
@@ -157,10 +158,11 @@ def run_variant(
     model = model or model_id()
     agent = build_agent(system_prompt, region, model=model)
     client = EvaluationClient(region, guard)
-    judge = next((e for e in evaluators if e.is_custom), None)
     result = RunResult(
         variant=variant, golden_set_fingerprint=golden.fingerprint, name=name or variant,
-        model=model, judge_model=(client.judge_model(judge) or "") if judge else "",
+        model=model, judge_models={
+            e.evaluator_id: client.judge_model(e) or e.judge_model for e in evaluators if e.judge_model
+        },
     )
     conversations = golden.conversations
 
@@ -282,6 +284,8 @@ def emit_report(
     write_markdown: bool = True,
 ) -> Path | None:
     conversations = golden.conversations
+    judges = tuple(e for e in evaluators if e.judge_model)
+    evaluators = tuple(e for e in evaluators if e.scorecard)
     rows = build_rows(before.scores, after.scores, evaluators)
     holdout = golden.ids(HOLDOUT)
     holdout_rows = build_rows(
@@ -317,6 +321,8 @@ def emit_report(
         "failures": failures,
         "before_breaches": before_breaches,
         "after_breaches": after_breaches,
+        "panel_before": judge_panel(before.scores, judges, conversations),
+        "panel_after": judge_panel(after.scores, judges, conversations),
         "where_before": by_layer(diagnose(before.scores, evaluators, conversations, before_breaches)),
         "where_after": by_layer(diagnose(after.scores, evaluators, conversations, after_breaches)),
     }
@@ -513,7 +519,7 @@ def _propose_with_agentcore(args: argparse.Namespace, baseline: RunResult, dev_i
         )
         spans.extend(session_spans)
     # The only steering evaluator start-recommendation accepts is a built-in one.
-    goal = next(e for e in cfg.CORE if e.evaluator_id == "Builtin.GoalSuccessRate")
+    goal = next(e for e in cfg.BUILTIN_CORE if e.evaluator_id == "Builtin.GoalSuccessRate")
     print(f"Recommending from {len(dev)} dev transcripts via AgentCore, steered by "
           f"{goal.short_name}. Takes a few minutes.")
     print("WARNING: it sees no ground truth, so it optimises what the customer asked for. "
@@ -593,14 +599,14 @@ def cmd_stability(args: argparse.Namespace) -> int:
 def cmd_setup(args: argparse.Namespace) -> int:
     """Create or update the repo-defined evaluators in this account and region."""
     client = EvaluationClient(args.region)
-    model = settings.get("CS_EVAL_JUDGE_MODEL_ID")
-    customs = [e for e in cfg.select(args.evaluators) if e.is_custom]
-    if not customs:
-        print("No repo-defined evaluators in this profile; nothing to set up.")
+    judges = [e for e in cfg.select(args.evaluators) if e.judge_model]
+    if not judges:
+        print("No red-line judges in this profile; nothing to set up.")
         return 0
-    for evaluator in customs:
-        evaluator_id, action = client.ensure_custom(evaluator, cfg.redline_judge_config(model))
-        print(f"{action}: {evaluator_id} ({evaluator.level}, judge model {model})")
+    for judge in judges:
+        evaluator_id, action = client.ensure_custom(judge, cfg.redline_judge_config(judge.judge_model))
+        print(f"{action}: {evaluator_id} ({judge.level}, judge model {judge.judge_model})")
+    print(f"{len(judges)} judge(s); the scorecard row is their majority vote, a tie counts as a breach.")
     return 0
 
 
@@ -612,7 +618,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
     else:
         print(f"Config:     no .env found (using built-in defaults). "
               f"Try: cp .env.example .env")
-    for name in ("AWS_PROFILE", "AWS_REGION", "CS_EVAL_MODEL_ID", "CS_EVAL_JUDGE_MODEL_ID",
+    for name in ("AWS_PROFILE", "AWS_REGION", "CS_EVAL_MODEL_ID", "CS_EVAL_JUDGE_MODEL_IDS",
                  "CS_EVAL_EVALUATORS", "CS_EVAL_MAX_USD", "CS_EVAL_DATA"):
         print(f"  {name:<23} {settings.get(name):<45} [{settings.describe_source(name)}]")
 
@@ -634,8 +640,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
     else:
         print(f"\nListEvaluators: {len(available)} evaluators visible in this account.")
         missing = [
-            e.evaluator_id for e in evaluators
-            if (client.custom_evaluator_id(e) is None if e.is_custom else e.evaluator_id not in available)
+            e.evaluator_id for e in evaluators if not e.voted
+            and (client.custom_evaluator_id(e) is None if e.is_custom else e.evaluator_id not in available)
         ]
         if missing:
             print(f"  ! NOT AVAILABLE: {', '.join(missing)}")
@@ -643,12 +649,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 print("    Repo-defined evaluators are created with `cs-eval setup`.")
             return 1
         print(f"  all {len(evaluators)} configured evaluators are available")
-        wanted = settings.get("CS_EVAL_JUDGE_MODEL_ID")
-        for e in evaluators:
-            actual = client.judge_model(e) if e.is_custom else None
-            if e.is_custom and actual != wanted:
-                print(f"  ! {e.short_name} judges with {actual}, but CS_EVAL_JUDGE_MODEL_ID is {wanted}; "
-                      f"run `make evaluators`")
+        for e in (e for e in evaluators if e.judge_model):
+            actual = client.judge_model(e)
+            if actual != e.judge_model:
+                print(f"  ! {e.short_name} judges with {actual}, but CS_EVAL_JUDGE_MODEL_IDS says "
+                      f"{e.judge_model}; run `make evaluators`")
 
     calls, projected = project_cost(conversations, evaluators, sides=2)
     print(f"\nA full before/after run would be ~{calls} judge calls, ~${projected:.2f} "

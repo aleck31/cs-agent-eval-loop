@@ -432,7 +432,7 @@ def test_red_lines_on_committed_fixtures():
 def test_stability_spread_flags_ranges_over_the_noise_floor():
     from cs_eval.stability import spreads
 
-    evaluator = cfg.CORE[0]
+    evaluator = cfg.BUILTIN_CORE[0]
 
     def score(value):
         return Score("x", evaluator.evaluator_id, evaluator.metric, evaluator.level, value, "", "")
@@ -487,17 +487,17 @@ def test_redline_judge_is_portable_to_recommendation_and_online_eval():
 
 
 def test_custom_evaluator_resolves_to_account_id_and_scores_keep_logical_id():
-    judge = next(e for e in cfg.CORE if e.is_custom)
+    judge = cfg.redline_judges(("global.openai.gpt-6.1-terra",))[0]
     client = EvaluationClient.__new__(EvaluationClient)
-    client._custom_ids = {"cs_redline_judge": "cs_redline_judge-AbCdEf1234"}
-    assert client.resolve(judge) == "cs_redline_judge-AbCdEf1234"
-    assert judge.evaluator_id == "Custom.cs_redline_judge"
+    client._custom_ids = {"cs_redline_gpt_6_1_terra": "cs_redline_gpt_6_1_terra-AbCdEf1234"}
+    assert client.resolve(judge) == "cs_redline_gpt_6_1_terra-AbCdEf1234"
+    assert judge.evaluator_id == "Custom.cs_redline_gpt_6_1_terra"
 
 
 def test_missing_custom_evaluator_says_to_run_setup():
     from cs_eval.evaluate import MissingEvaluator
 
-    judge = next(e for e in cfg.CORE if e.is_custom)
+    judge = cfg.redline_judges(("global.openai.gpt-6.1-terra",))[0]
     client = EvaluationClient.__new__(EvaluationClient)
     client._custom_ids = {}
     with pytest.raises(MissingEvaluator, match="cs-eval setup"):
@@ -517,10 +517,11 @@ def test_fixture_without_model_field_takes_it_from_its_transcripts():
 def test_custom_judge_retries_a_transient_result_error():
     from cs_eval.dataset import load_golden_set
 
-    judge = next(e for e in cfg.CORE if e.is_custom)
+    judge = cfg.redline_judges(("global.openai.gpt-6.1-terra",))[0]
     client = EvaluationClient.__new__(EvaluationClient)
     client.guard = None
-    client._custom_ids = {"cs_redline_judge": "cs_redline_judge-AbCdEf1234"}
+    client._custom_ids = {"cs_redline_gpt_6_1_terra": "cs_redline_gpt_6_1_terra-AbCdEf1234"}
+    client._judge_models = {judge.evaluator_id: judge.judge_model}
     replies = iter([
         {"evaluationResults": [{"errorCode": "ValidationException"}]},
         {"evaluationResults": [{"value": 1.0, "label": "Clean"}]},
@@ -543,8 +544,58 @@ def test_describing_a_ticket_request_is_not_an_offer():
 def test_custom_evaluations_pay_a_fee_plus_their_judge_model_tokens():
     """AgentCore list prices: built-in bundles the judge model; custom bills both separately."""
     builtin = cfg.evaluation_cost(False, input_tokens=1000, output_tokens=1000)
-    gpt = cfg.evaluation_cost(True, 1000, 1000, judge_model="us.openai.gpt-6.1-terra")
+    gpt = cfg.evaluation_cost(True, 1000, 1000, judge_model="global.openai.gpt-6.1-terra")
     unknown = cfg.evaluation_cost(True, 1000, 1000, judge_model="some.new-model")
     assert builtin == pytest.approx(0.0024 + 0.012)
-    assert gpt == pytest.approx(0.0015 + 0.0011 + 0.0055)
-    assert unknown == pytest.approx(0.0015 + 0.0022 + 0.011)  # dearest listed rate
+    assert gpt == pytest.approx(0.0015 + 0.001 + 0.005)
+    dearest = max(cfg.JUDGE_PRICES.values())
+    assert unknown == pytest.approx(0.0015 + dearest[0] + dearest[1])
+
+
+
+# --- red-line judge panel ------------------------------------------------------
+PANEL = ("global.openai.gpt-6.1-terra", "global.anthropic.claude-sonnet-5-5", "global.xai.grok-4.7")
+
+
+def test_judge_names_fit_the_evaluator_name_pattern():
+    import re
+
+    names = [j.short_name for j in cfg.redline_judges(PANEL)]
+    assert names == ["cs_redline_gpt_6_1_terra", "cs_redline_sonnet_5_5", "cs_redline_grok_4_7"]
+    assert all(re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]{0,47}", n) for n in names)
+
+
+def test_one_to_three_judges():
+    with pytest.raises(ValueError):
+        cfg.redline_judges(())
+    with pytest.raises(ValueError):
+        cfg.redline_judges(PANEL + ("global.other.model",))
+
+
+def _verdicts(judges, values):
+    return [Score("x", j.evaluator_id, j.metric, j.level, v, "", "") for j, v in zip(judges, values)]
+
+
+def test_vote_is_a_majority_and_a_tie_is_a_breach():
+    from cs_eval.evaluate import vote
+
+    three, two = cfg.redline_judges(PANEL), cfg.redline_judges(PANEL[:2])
+    majority = vote("x", cfg.REDLINE_VOTE, list(three), _verdicts(three, [1.0, 1.0, 0.0]))
+    tie = vote("x", cfg.REDLINE_VOTE, list(two), _verdicts(two, [1.0, 0.0]))
+    lone = vote("x", cfg.REDLINE_VOTE, list(three[:1]), _verdicts(three[:1], [0.0]))
+    assert (majority.value, majority.label) == (1.0, "2/3 clean")
+    assert tie.value == 0.0
+    assert lone.value == 0.0
+
+
+def test_vote_without_any_judge_score_is_not_clean():
+    from cs_eval.evaluate import vote
+
+    three = cfg.redline_judges(PANEL)
+    assert vote("x", cfg.REDLINE_VOTE, list(three), []).value is None
+
+
+def test_core_profile_puts_the_vote_on_the_scorecard_and_judges_beside_it():
+    chosen = cfg.select("core", judge_models=PANEL)
+    assert [e.metric for e in chosen if e.scorecard][1] == "No red line crossed"
+    assert [e.judge_model for e in chosen if not e.scorecard] == list(PANEL)

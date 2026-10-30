@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from botocore.config import Config
 from langchain_aws import ChatBedrock
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -69,9 +70,11 @@ def build_agent(system_prompt: str, region: str, model: str | None = None):
     """Compile the LangGraph agent. Same construction as the reference pattern."""
     from langchain.agents import create_agent
 
-    # No temperature: current Claude models reject sampling parameters.
+    # No temperature: current Claude models reject sampling parameters. Adaptive retries
+    # because global.* profiles of large models return ServiceUnavailable under load.
     bedrock = ChatBedrock(
-        model_id=model or model_id(), region_name=region, beta_use_converse_api=True
+        model_id=model or model_id(), region_name=region, beta_use_converse_api=True,
+        config=Config(retries={"max_attempts": 10, "mode": "adaptive"}, read_timeout=300),
     )
     return create_agent(model=bedrock, tools=TOOLS, system_prompt=system_prompt)
 

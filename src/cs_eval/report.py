@@ -151,6 +151,38 @@ def build_case_matrix(
     return cells
 
 
+@dataclass
+class JudgePanel:
+    """How the red-line judges voted on one run."""
+
+    clean_rate: dict[str, float | None]  # judge short name -> share of cases judged clean
+    split: list[tuple[str, dict[str, float]]]  # (case, {judge: value}) where judges disagree
+    scored: int  # cases with at least two judge scores
+
+    @property
+    def unanimous(self) -> float | None:
+        return None if not self.scored else 1 - len(self.split) / self.scored
+
+
+def judge_panel(
+    scores: list[Score], judges: tuple[Evaluator, ...], conversations: list[Conversation]
+) -> JudgePanel:
+    names = {j.evaluator_id: j.short_name.removeprefix("cs_redline_") for j in judges}
+    split: list[tuple[str, dict[str, float]]] = []
+    scored = 0
+    for conversation in conversations:
+        votes = {
+            names[s.evaluator_id]: s.value for s in scores
+            if s.conversation_id == conversation.id and s.evaluator_id in names and s.ok
+        }
+        if len(votes) >= 2:
+            scored += 1
+            if len({v >= 0.5 for v in votes.values()}) > 1:
+                split.append((conversation.id, votes))
+    rates = {names[j.evaluator_id]: aggregate_metric(scores, j) for j in judges}
+    return JudgePanel(clean_rate=rates, split=split, scored=scored)
+
+
 def red_line_rows(
     before: list[Breach], after: list[Breach]
 ) -> list[tuple[RedLine, set[str], set[str]]]:
@@ -195,6 +227,8 @@ def render_terminal(
     after_breaches: list[Breach],
     where_before: dict[str, list[str]],
     where_after: dict[str, list[str]],
+    panel_before: JudgePanel,
+    panel_after: JudgePanel,
     width: int = 78,
 ) -> str:
     """The screenshot. Business metrics first, weak cases second, cause last."""
@@ -245,6 +279,18 @@ def render_terminal(
         out.append(f"{red_line.label:<34}{len(before_ids):>8}{len(after_ids):>8}{'':>9}  {mark}")
     out.append("  Cases breaching; lower is better. Deterministic, so any change is real.")
     out.append("")
+
+    # --- red-line judges ---------------------------------------------------
+    if panel_after.clean_rate:
+        out.append(f"{f'RED-LINE JUDGES ({len(panel_after.clean_rate)}, majority vote)':<34}{'BEFORE':>8}{'AFTER':>8}")
+        for name in panel_after.clean_rate:
+            out.append(f"  {name:<32}{_pct(panel_before.clean_rate.get(name)):>8}"
+                       f"{_pct(panel_after.clean_rate.get(name)):>8}")
+        if panel_after.scored:
+            out.append(f"  {'Unanimous':<32}{_pct(panel_before.unanimous):>8}{_pct(panel_after.unanimous):>8}")
+            split = ", ".join(cid for cid, _ in panel_after.split) or "none"
+            out.append(f"  Split after, for human review: {split[:44]}")
+        out.append("")
 
     # --- where to fix -------------------------------------------------------
     layers = list(dict.fromkeys([*where_before, *where_after]))
@@ -377,6 +423,8 @@ def render_markdown(
     after_breaches: list[Breach],
     where_before: dict[str, list[str]],
     where_after: dict[str, list[str]],
+    panel_before: JudgePanel,
+    panel_after: JudgePanel,
     evaluators: tuple[Evaluator, ...],
 ) -> str:
     """Same story as the terminal view, plus the full matrix for whoever digs in."""
@@ -440,6 +488,26 @@ def render_markdown(
                    f"`{breach.evidence}`")
     if after_breaches:
         out.append("")
+
+    if panel_after.clean_rate:
+        out.append(f"## Red-line judges ({len(panel_after.clean_rate)}, majority vote)")
+        out.append("")
+        out.append("Share of cases each judge found clean. A tie counts as a breach. Cases where the "
+                   "judges split are the ones worth a human label: agreement is not accuracy.")
+        out.append("")
+        out.append("| Judge | Before | After |")
+        out.append("|---|---|---|")
+        for name in panel_after.clean_rate:
+            out.append(f"| {name} | {_pct(panel_before.clean_rate.get(name)).strip()} "
+                       f"| {_pct(panel_after.clean_rate.get(name)).strip()} |")
+        out.append(f"| unanimous | {_pct(panel_before.unanimous).strip()} | {_pct(panel_after.unanimous).strip()} |")
+        out.append("")
+        for side, panel in (("before", panel_before), ("after", panel_after)):
+            for cid, votes in panel.split:
+                tally = ", ".join(f"{n} {'clean' if v >= 0.5 else 'breach'}" for n, v in votes.items())
+                out.append(f"- {side}, {cid}: {tally}")
+        if panel_before.split or panel_after.split:
+            out.append("")
 
     layers = list(dict.fromkeys([*where_before, *where_after]))
     if layers:
