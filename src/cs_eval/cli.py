@@ -589,7 +589,7 @@ def cmd_stability(args: argparse.Namespace) -> int:
 def cmd_setup(args: argparse.Namespace) -> int:
     """Create or update the repo-defined evaluators in this account and region."""
     client = EvaluationClient(args.region)
-    model = settings.get("CS_EVAL_MODEL_ID")
+    model = settings.get("CS_EVAL_JUDGE_MODEL_ID")
     customs = [e for e in cfg.select(args.evaluators) if e.is_custom]
     if not customs:
         print("No repo-defined evaluators in this profile; nothing to set up.")
@@ -608,9 +608,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
     else:
         print(f"Config:     no .env found (using built-in defaults). "
               f"Try: cp .env.example .env")
-    for name in ("AWS_PROFILE", "AWS_REGION", "CS_EVAL_MODEL_ID",
+    for name in ("AWS_PROFILE", "AWS_REGION", "CS_EVAL_MODEL_ID", "CS_EVAL_JUDGE_MODEL_ID",
                  "CS_EVAL_EVALUATORS", "CS_EVAL_MAX_USD", "CS_EVAL_DATA"):
-        print(f"  {name:<20} {settings.get(name):<48} [{settings.describe_source(name)}]")
+        print(f"  {name:<23} {settings.get(name):<45} [{settings.describe_source(name)}]")
 
     identity = _whoami(args.region)
     print(f"\nIdentity:   {identity}")

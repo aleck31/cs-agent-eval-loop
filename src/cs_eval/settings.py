@@ -33,6 +33,7 @@ DEFAULTS: dict[str, str] = {
     "AWS_PROFILE": "",
     "AWS_REGION": "us-east-1",
     "CS_EVAL_MODEL_ID": "us.anthropic.claude-sonnet-5-5",
+    "CS_EVAL_JUDGE_MODEL_ID": "us.anthropic.claude-sonnet-5-5",
     "CS_EVAL_MAX_USD": "5.00",
     "CS_EVAL_EVALUATORS": "core",
     "CS_EVAL_DATA": "data/golden_set.yaml",

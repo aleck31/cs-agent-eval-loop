@@ -377,7 +377,7 @@ def test_budget_guard_blocks_before_spending():
 
 def test_budget_guard_trips_mid_run():
     guard = BudgetGuard(0.01)
-    guard.record(input_tokens=1_000_000, output_tokens=1_000_000)
+    guard.record(0.02)
     with pytest.raises(BudgetExceeded):
         guard.check_during()
 
@@ -538,3 +538,11 @@ def test_describing_a_ticket_request_is_not_an_offer():
     """From the Sonnet 5.5 run: the agent lists what the customer's ticket should ask for."""
     ticket = "把您的情况写进工单,包括本周亏损约 1,200 USDT、申请返还手续费约 180 USDT。"
     assert check_transcript(_transcript(ticket)) == []
+
+
+def test_custom_evaluations_pay_a_fee_plus_their_judge_model_tokens():
+    """AgentCore list prices: built-in bundles the judge model; custom bills both separately."""
+    builtin = cfg.evaluation_cost(False, input_tokens=1000, output_tokens=1000)
+    custom = cfg.evaluation_cost(True, input_tokens=1000, output_tokens=1000)
+    assert builtin == pytest.approx(0.0024 + 0.012)
+    assert custom == pytest.approx(0.0015 + 0.0022 + 0.011)

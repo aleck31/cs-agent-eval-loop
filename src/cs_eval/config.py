@@ -89,7 +89,7 @@ Tools the agent could call:
 REDLINE_JUDGE_NAME = "cs_redline_judge"
 
 
-def redline_judge_config(model_id: str) -> dict:
+def redline_judge_config(model_id: str) -> dict:  # model_id: CS_EVAL_JUDGE_MODEL_ID
     """Control-plane evaluatorConfig; no sampling params, current models reject them."""
     return {
         "llmAsAJudge": {
@@ -277,30 +277,43 @@ def select(profile: str = "core") -> tuple[Evaluator, ...]:
 
 
 # --- Cost model -------------------------------------------------------------
-# Each returned evaluation result is one LLM-as-judge inference. Cost therefore
-# scales with turns and tool calls, not just with conversation count.
+# Each returned evaluation result is one judge inference, so cost scales with turns and
+# tool calls, not just with conversation count.
 #
-# Measured: ~900 input + ~350 output tokens per judge call.
-JUDGE_INPUT_TOKENS = 900
-JUDGE_OUTPUT_TOKENS = 350
+# AgentCore Evaluations list prices (aws.amazon.com/bedrock/agentcore/pricing, checked
+# 2026-10-30): built-in evaluators bill tokens with the judge model included; custom
+# evaluators bill a per-evaluation fee, and their judge model's tokens bill separately.
+BUILTIN_INPUT_PER_1K = 0.0024
+BUILTIN_OUTPUT_PER_1K = 0.012
+CUSTOM_FEE_PER_EVALUATION = 0.0015
 
-# Judge token rate, USD per 1K. Built-in judges run service-side on a model we do not
-# choose; this is the rate the committed runs were costed at.
-PRICE_INPUT_PER_1K = 0.003
-PRICE_OUTPUT_PER_1K = 0.015
-
-# Agent-model rate (CS_EVAL_MODEL_ID), USD per 1K: Sonnet 5.5 via the us.* inference profile.
+# CS_EVAL_MODEL_ID rate, USD per 1K (agent and proposer): Sonnet 5.5, us.* inference profile.
 AGENT_PRICE_INPUT_PER_1K = 0.0022
 AGENT_PRICE_OUTPUT_PER_1K = 0.011
 
+# CS_EVAL_JUDGE_MODEL_ID rate, USD per 1K: Sonnet 5.5 as shipped; change it with the model.
+JUDGE_PRICE_INPUT_PER_1K = 0.0022
+JUDGE_PRICE_OUTPUT_PER_1K = 0.011
 
-def judge_cost(input_tokens: int, output_tokens: int) -> float:
-    return input_tokens / 1000 * PRICE_INPUT_PER_1K + output_tokens / 1000 * PRICE_OUTPUT_PER_1K
+# Tokens per evaluation measured on the committed v2 runs; used only for projections.
+BUILTIN_TOKENS = (1800, 205)
+CUSTOM_TOKENS = (3200, 355)
 
-COST_PER_JUDGE_CALL = (
-    JUDGE_INPUT_TOKENS / 1000 * PRICE_INPUT_PER_1K
-    + JUDGE_OUTPUT_TOKENS / 1000 * PRICE_OUTPUT_PER_1K
-)
+
+def evaluation_cost(custom: bool, input_tokens: int, output_tokens: int) -> float:
+    """USD for one returned evaluation result."""
+    if custom:
+        return (
+            CUSTOM_FEE_PER_EVALUATION
+            + input_tokens / 1000 * JUDGE_PRICE_INPUT_PER_1K
+            + output_tokens / 1000 * JUDGE_PRICE_OUTPUT_PER_1K
+        )
+    return input_tokens / 1000 * BUILTIN_INPUT_PER_1K + output_tokens / 1000 * BUILTIN_OUTPUT_PER_1K
+
+
+def projected_cost_per_call(evaluator: Evaluator) -> float:
+    tokens = CUSTOM_TOKENS if evaluator.is_custom else BUILTIN_TOKENS
+    return evaluation_cost(evaluator.is_custom, *tokens)
 
 
 def estimate_judge_calls(
@@ -316,7 +329,3 @@ def estimate_judge_calls(
         else:  # TOOL_CALL
             total += tool_calls
     return total
-
-
-def estimate_cost(judge_calls: int) -> float:
-    return judge_calls * COST_PER_JUDGE_CALL

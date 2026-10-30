@@ -24,7 +24,15 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from cs_eval.config import SESSION, TOOL_CALL, TRACE, Evaluator, estimate_cost, judge_cost
+from cs_eval.config import (
+    CUSTOM_PREFIX,
+    SESSION,
+    TOOL_CALL,
+    TRACE,
+    Evaluator,
+    evaluation_cost,
+    projected_cost_per_call,
+)
 from cs_eval.dataset import Conversation
 from cs_eval.spans import build_session_spans
 
@@ -86,7 +94,11 @@ class RunResult:
 
     @property
     def cost_usd(self) -> float:
-        return judge_cost(self.input_tokens, self.output_tokens)
+        return sum(
+            evaluation_cost(s.evaluator_id.startswith(CUSTOM_PREFIX), s.input_tokens, s.output_tokens)
+            for s in self.scores
+            if s.input_tokens or s.output_tokens
+        )
 
 
 class BudgetGuard:
@@ -94,20 +106,14 @@ class BudgetGuard:
 
     def __init__(self, ceiling_usd: float) -> None:
         self.ceiling_usd = ceiling_usd
-        self.input_tokens = 0
-        self.output_tokens = 0
-
-    @property
-    def spent_usd(self) -> float:
-        return judge_cost(self.input_tokens, self.output_tokens)
+        self.spent_usd = 0.0
 
     @property
     def remaining_usd(self) -> float:
         return self.ceiling_usd - self.spent_usd
 
-    def record(self, input_tokens: int, output_tokens: int) -> None:
-        self.input_tokens += input_tokens
-        self.output_tokens += output_tokens
+    def record(self, usd: float) -> None:
+        self.spent_usd += usd
 
     def check_before(self, projected_usd: float) -> None:
         if self.spent_usd + projected_usd > self.ceiling_usd:
@@ -264,6 +270,7 @@ class EvaluationClient:
         input_tokens = output_tokens = 0
 
         for evaluator in evaluators:
+            cost = 0.0
             try:
                 request: dict[str, Any] = {
                     "evaluatorId": self.resolve(evaluator),
@@ -301,6 +308,10 @@ class EvaluationClient:
                 usage = result.get("tokenUsage") or {}
                 input_tokens += usage.get("inputTokens", 0)
                 output_tokens += usage.get("outputTokens", 0)
+                if usage:
+                    cost += evaluation_cost(
+                        evaluator.is_custom, usage.get("inputTokens", 0), usage.get("outputTokens", 0)
+                    )
                 context = (result.get("context") or {}).get("spanContext") or {}
 
                 if result.get("errorCode"):
@@ -326,8 +337,7 @@ class EvaluationClient:
                 )
 
             if self.guard:
-                self.guard.record(input_tokens, output_tokens)
-                input_tokens = output_tokens = 0
+                self.guard.record(cost)
                 self.guard.check_during()
 
         return scores, input_tokens, output_tokens, failures
@@ -360,15 +370,13 @@ def project_cost(
     is close for this dataset and errs slightly high.
     """
     calls = 0
+    cost = 0.0
     for conversation in conversations:
         turns = conversation.turn_count
         assumed_tool_calls = turns
         for evaluator in evaluators:
-            if evaluator.level == SESSION:
-                calls += 1
-            elif evaluator.level == TRACE:
-                calls += turns
-            elif evaluator.level == TOOL_CALL:
-                calls += assumed_tool_calls
+            n = {SESSION: 1, TRACE: turns, TOOL_CALL: assumed_tool_calls}.get(evaluator.level, 0)
+            calls += n
+            cost += n * projected_cost_per_call(evaluator)
     calls *= sides
-    return calls, estimate_cost(calls)
+    return calls, cost * sides
